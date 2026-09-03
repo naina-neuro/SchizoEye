@@ -290,6 +290,14 @@
                 </tr>
             </table>
 
+            {% if data.prediction %}
+            <div class="diagnosis-line" style="margin-top: 10px; border-color: #0056b3; background-color: #f0f7ff;">
+                <strong>Model Inference:</strong>
+                {{ data.prediction.label }}
+                ({{ (data.prediction.confidence * 100) | round(1) }}% confidence)
+            </div>
+            {% endif %}
+
             <h3 class="section-header">TASK 1: Free-Viewing (FV) Analysis</h3>
 
             <table class="results-table">
@@ -702,9 +710,7 @@
                 The subject displays oculomotor control metrics as recorded. Antisaccade performance and tracking
                 capabilities reflect specific top-down inhibitory mechanisms.
                 <br><br>
-                This report is generated in <strong>Data Collection Mode</strong>. No diagnostic classification is
-                produced. All 59 oculomotor features are available in the metrics table above for clinical or research
-                analysis.
+                This report contains the binary model inference and all 59 oculomotor features. The result is decision-support output and is not a standalone clinical diagnosis.
             </div>
 
             {% if data.doctor_notes and data.doctor_notes|length > 0 %}
@@ -717,7 +723,7 @@
 
             <div class="diagnosis-line">
                 Report Mode:<br>
-                <strong>Data Collection — No AI Prediction</strong>
+                <strong>Model Inference — Binary Classification</strong>
             </div>
 
             <div style="margin-top: 60px; display: flex; justify-content: space-between; font-size: 10pt;">

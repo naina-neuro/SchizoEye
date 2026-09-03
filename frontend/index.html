@@ -49,6 +49,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Oculomotor Diagnostic Battery</title>
+  <script src="config.js"></script>
   <!--
     NeurOcular Engine — TF 3.20.0 + MediaPipe FaceMesh (replaces WebGazer)
     ─────────────────────────────────────────────────────────────────────────
@@ -147,15 +148,21 @@
 
   <script>
     // ── API BASE URL ─────────────────────────────────────────────────────────
-    // Change this single constant when deploying to a new backend URL.
-    // The Flask server serves this page and the API from the same origin.
-    const API = window.location.origin;
+    // Set SCHIZOEYE_API_BASE in the hosting platform's generated config.js.
+    const API = (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
 
     let _currentUser = null;
     let _currentRole = null;
 
     // Check if user was already logged in (for new tabs)
    function initializeUserFromStorage() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const testToken = urlParams.get('token');
+  if (urlParams.get('mode') === 'test' && testToken) {
+    document.getElementById('login-screen').style.display = 'none';
+    showBatteryIntro();
+    return;
+  }
   const storedUser = localStorage.getItem('currentUser');
   const storedRole = localStorage.getItem('currentRole');
   if (storedUser && storedRole) {
@@ -167,7 +174,6 @@
     document.getElementById('user-badge-name').textContent = `${storedUser} · ${storedRole}`;
 
     // ── NEW: if this tab was opened for a test, go straight to battery ──
-    const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('mode') === 'test') {
       showBatteryIntro();   // ← show the battery directly
       
@@ -198,6 +204,7 @@
       try {
         const resp = await fetch(`${API}/login`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
+          credentials: 'include',
           body: JSON.stringify({ username, password })
         });
         const data = await resp.json();
@@ -672,7 +679,7 @@
 
       <!-- FOOTER NOTE -->
       <div class="cr-footer-note">
-        ℹ This report was generated in <strong>Data Collection Mode</strong>. 
+        ℹ This report was generated with the deployed binary model.
         No diagnostic classification is produced. All 59 extracted oculomotor features 
         are stored in the database for research analysis.
       </div>
@@ -1154,6 +1161,7 @@ window.doLogin = async function() {
   try {
     const resp = await fetch(`${API}/login`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
+      credentials: 'include',
       body: JSON.stringify({ username, password })
     });
     const data = await resp.json();
@@ -2041,7 +2049,7 @@ window.doLogin = async function() {
       <div class="task-section" id="ai-result-section" style="display:none;">
         <div class="task-section-header">
           <div class="task-badge">DATA</div>
-          <h2>Oculomotor Feature Extraction &mdash; Data Collection</h2>
+          <h2>Oculomotor Feature Extraction &mdash; Model Inference</h2>
         </div>
         <div class="task-section-body">
           <!-- Status bar: updated by runAIClassification() as pipeline progresses -->
@@ -2051,6 +2059,7 @@ window.doLogin = async function() {
           </div>
           <!-- Results body: revealed after feature extraction succeeds -->
           <div id="ai-results-body" style="display:none;">
+            <div id="ai-prediction-summary" style="padding:14px;background:var(--off-white);border:2px solid var(--border);margin-bottom:20px;font-weight:bold;color:var(--accent);"></div>
             <!-- Collapsible 59-feature summary table, rendered by renderFeaturesOnly() -->
             <details style="margin-bottom:20px; border: 2px solid var(--border); padding: 15px;">
               <summary style="font-size:15px;font-weight:bold;cursor:pointer;outline:none;letter-spacing:0.05em;text-transform:uppercase;">
@@ -2062,7 +2071,7 @@ window.doLogin = async function() {
           </div>
           <div
             style="margin-top:20px;padding:14px;border:2px solid var(--border);background:var(--off-white);font-size:13px;font-weight:bold;color:var(--dim);letter-spacing:0.05em;">
-            &#128196; DATA COLLECTION MODE &mdash; No diagnostic prediction is generated. Features are saved to the database for research use.
+            &#128196; MODEL INFERENCE MODE &mdash; The binary model result and all 59 features are saved to the database.
           </div>
         </div>
       </div>

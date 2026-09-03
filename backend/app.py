@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, session
 from flask_cors import CORS
 import joblib
 import pandas as pd
@@ -16,6 +16,7 @@ import gridfs
 from bson.binary import Binary
 from bson.objectid import ObjectId
 from dotenv import load_dotenv
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 # Heatmap Imports
 import matplotlib
@@ -35,7 +36,7 @@ import secrets
 
 # ── FLASK APP SETUP ──────────────────────────────────────────────────────────
 # template_folder defaults to 'templates/' relative to this file (backend/templates/)
-app = Flask(__name__)
+app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
 # CORS: restrict origins in production via the CORS_ORIGINS env var.
@@ -44,7 +45,7 @@ app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 _cors_origins = os.getenv("CORS_ORIGINS", "*")
 if _cors_origins != "*":
     _cors_origins = [o.strip() for o in _cors_origins.split(",")]
-CORS(app, origins=_cors_origins)
+CORS(app, origins=_cors_origins, supports_credentials=True)
 
 # ── DISABLE BROWSER CACHING FOR ALL RESPONSES ──
 @app.after_request
@@ -61,6 +62,44 @@ USERS = {
     "doctor":    {"password": os.getenv("DOCTOR_PASSWORD",    "doctor123"),    "role": "doctor"},
     "clinician": {"password": os.getenv("CLINICIAN_PASSWORD", "clinician123"), "role": "clinician"},
 }
+
+INTEGRATION_API_KEY = os.getenv("INTEGRATION_API_KEY")
+TEST_FRONTEND_URL = os.getenv("TEST_FRONTEND_URL", "https://your-frontend.example.com/index.html")
+TEST_TOKEN_MAX_AGE = int(os.getenv("TEST_TOKEN_MAX_AGE", "3600"))
+test_token_serializer = URLSafeTimedSerializer(app.secret_key, salt="schizoeye-test")
+
+
+def _test_token_is_valid():
+    token = request.headers.get("X-Test-Token", "")
+    if not token:
+        return False
+    try:
+        test_token_serializer.loads(token, max_age=TEST_TOKEN_MAX_AGE)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def _caller_is_authorized():
+    return _test_token_is_valid() or bool(session.get("user"))
+
+
+@app.route('/integration/test-sessions', methods=['POST'])
+def create_test_session():
+    if not INTEGRATION_API_KEY or request.headers.get("X-Integration-Key") != INTEGRATION_API_KEY:
+        return jsonify({'success': False, 'error': 'Invalid integration credentials'}), 401
+    data = request.get_json(silent=True) or {}
+    payload = {
+        'external_reference': str(data.get('external_reference', ''))[:200],
+        'issued_at': datetime.utcnow().isoformat()
+    }
+    token = test_token_serializer.dumps(payload)
+    separator = '&' if '?' in TEST_FRONTEND_URL else '?'
+    return jsonify({
+        'success': True,
+        'test_url': f'{TEST_FRONTEND_URL}{separator}mode=test&token={token}',
+        'expires_in': TEST_TOKEN_MAX_AGE
+    })
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -181,10 +220,25 @@ def _ensure_indexes():
 
 init_mongodb()
 
-# ── MODEL LOADING (disabled — data collection mode) ──
-# Models are not used in data collection mode.
-label_encoder = classifier = regressor = None
-print("[INFO] Running in data collection mode — ML models disabled")
+# ── MODEL LOADING ────────────────────────────────────────────────────────────
+# The deployed artifacts are the binary model produced by retrain_fixed.py:
+# Healthy versus Schizophrenia. The source dataset still contains HC/FES/CSZ.
+MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(BASE, "model_artifacts"))
+MODEL_FILE = os.getenv("MODEL_FILE", "model_calibrated.pkl")
+MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILE)
+LABEL_ENCODER_PATH = os.path.join(MODEL_DIR, "label_encoder.pkl")
+FEATURE_NAMES_PATH = os.path.join(MODEL_DIR, "feature_names.pkl")
+label_encoder = classifier = None
+MODEL_FEATURES = []
+try:
+    classifier = joblib.load(MODEL_PATH)
+    label_encoder = joblib.load(LABEL_ENCODER_PATH)
+    MODEL_FEATURES = list(joblib.load(FEATURE_NAMES_PATH))
+    if len(MODEL_FEATURES) != 59:
+        raise ValueError(f"Expected 59 model features, found {len(MODEL_FEATURES)}")
+    print(f"[OK] Model loaded: {MODEL_FILE} ({len(MODEL_FEATURES)} features)")
+except Exception as e:
+    print(f"[WARN] Model not loaded: {e}")
 
 REQUIRED_FEATURES = [
     'fv_fnum_mean', 'fv_fdur_mean', 'fv_snum_mean', 'fv_sdur_mean', 'fv_samp_mean',
@@ -201,6 +255,42 @@ REQUIRED_FEATURES = [
     'antisaccade_error_rate', 'antisaccade_correction_error_rate',
     'antisaccade_latency', 'antisaccade_accuracy'
 ]
+
+if REQUIRED_FEATURES != MODEL_FEATURES and MODEL_FEATURES:
+    raise RuntimeError("Application feature schema does not match feature_names.pkl")
+
+
+def _validated_features(features):
+    if not isinstance(features, dict):
+        raise ValueError("features must be an object containing exactly 59 named values")
+    expected = MODEL_FEATURES or REQUIRED_FEATURES
+    missing = [name for name in expected if name not in features]
+    extra = [name for name in features if name not in expected]
+    if missing or extra:
+        raise ValueError(f"Feature schema mismatch; missing={missing}, extra={extra}")
+    cleaned = {}
+    for name in expected:
+        value = features[name]
+        if value is None or not isinstance(value, (int, float)) or not np.isfinite(value):
+            raise ValueError(f"Feature {name} must be a finite number")
+        cleaned[name] = float(value)
+    return cleaned
+
+
+def _classify_features(features):
+    cleaned = _validated_features(features)
+    row = pd.DataFrame([[cleaned[name] for name in MODEL_FEATURES or REQUIRED_FEATURES]],
+                       columns=MODEL_FEATURES or REQUIRED_FEATURES)
+    probabilities = classifier.predict_proba(row)[0]
+    classes = label_encoder.classes_
+    probability_map = {str(label): float(probability)
+                       for label, probability in zip(classes, probabilities)}
+    predicted_index = int(np.argmax(probabilities))
+    return {
+        "label": str(classes[predicted_index]),
+        "confidence": float(probabilities[predicted_index]),
+        "probabilities": probability_map,
+    }, cleaned
 
 # ── HEATMAP GENERATION FUNCTION ──
 def generate_heatmap_base64(fv_gaze_data):
@@ -289,7 +379,8 @@ def _internal_generate_pdf(data):
         if 'panss_score' not in data:
             data['panss_score'] = 'Not recorded'
         
-        # No AI predictions in data collection mode — omit predictions block
+        # Prediction is optional for direct report generation, but is included
+        # automatically for reports created by /save_results.
 
         rendered_html = render_template("report_template.html", data=data)
         return HTML(string=rendered_html).write_pdf(pdf_variant='pdf/a-1b')
@@ -327,10 +418,33 @@ def _upload_to_gridfs(binary_payload, filename, content_type, metadata):
 def health():
     return jsonify({
         'status': 'ok', 
-        'mode': 'data_collection',
+        'mode': 'inference',
+        'model_loaded': classifier is not None,
+        'model_file': MODEL_FILE if classifier is not None else None,
         'mongodb_connected': db is not None,
         'mongodb_db': db.name if db is not None else None
     })
+
+@app.route('/classify', methods=['POST'])
+def classify():
+    if not _caller_is_authorized():
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    if classifier is None or label_encoder is None:
+        return jsonify({'success': False, 'error': 'Classifier not available'}), 503
+    try:
+        data = request.get_json(silent=True) or {}
+        prediction, cleaned = _classify_features(data.get('features'))
+        return jsonify({
+            'success': True,
+            'prediction': prediction,
+            'features': cleaned,
+            'feature_order': MODEL_FEATURES or REQUIRED_FEATURES
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': 'Inference failed'}), 500
 
 # ── SESSION DATA ROUTES ──────────────────────────────────────────────────────
 
@@ -564,6 +678,8 @@ def export_all_features():
 @app.route('/save_results', methods=['POST'])
 def save_results():
     global db, fs
+    if not _caller_is_authorized():
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
     print("[DEBUG] /save_results called. Checking DB connection...")
     if db is None or fs is None:
         print("[DEBUG] DB is None! Attempting to reconnect...")
@@ -575,9 +691,9 @@ def save_results():
     
     try:
         print("[DEBUG] Attempting to parse JSON payload...")
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         print(f"[DEBUG] JSON parsed successfully. Payload keys: {list(data.keys())}")
-        
+        prediction, validated_features = _classify_features(data.get('features'))
         subject_id = data.get('subject_id', 'Unknown')
         timestamp = datetime.now()
         gridfs_refs = {}
@@ -636,7 +752,8 @@ def save_results():
                     'date': timestamp.strftime('%d %b %Y')
                 },
                 'panss_score': data.get('panss_score') or 'Not recorded',   # ← ADD THIS LINE
-                'metrics': data.get('features', {}),
+                'metrics': validated_features,
+                'prediction': prediction,
                 'fv_gaze': data.get('fv_gaze', []),
                 'doctor_notes': data.get('notes', ''),
                 'images': {
@@ -677,14 +794,16 @@ def save_results():
             },
             "results": {
                 "panss_score": data.get('panss_score'),  # store as-is (None/null → None in Mongo)
-                "features": data.get('features', {}),
+                "features": validated_features,
+                "feature_order": MODEL_FEATURES or REQUIRED_FEATURES,
+                "prediction": prediction,
                 # FIX ACC-3 / ACC-4 (battery-controller.js): persist the per-feature
                 # data-quality flags (real vs missing-floor vs clipped) and the
                 # empirical per-task capture-rate diagnostics that the frontend now
                 # computes and sends. Previously these were silently dropped here
                 # even after the frontend started sending them, which would have
                 # made the fix a no-op for anything actually saved to the database.
-                "feature_quality": data.get('feature_quality', {}),
+                "feature_quality": data.get('feature_quality', data.get('data_quality', {})),
                 "capture_diagnostics": data.get('capture_diagnostics', {})
             },
             "notes": data.get('notes', ""),
@@ -707,6 +826,10 @@ def save_results():
             'message': 'Session saved to MongoDB Atlas successfully',
             'session_id': str(insert_result.inserted_id),
             'patient_id': patient_id,
+            'prediction': prediction,
+            'features': validated_features,
+            'feature_order': MODEL_FEATURES or REQUIRED_FEATURES,
+            'report_url': f"/sessions/{insert_result.inserted_id}/pdf",
             'gridfs_refs': {key: str(value) for key, value in session_doc['gridfs_refs'].items()}
         })
 

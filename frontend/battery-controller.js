@@ -37,7 +37,7 @@
  *    runAIClassification() — 3-step pipeline:
  *        1. Parse raw gaze rows from all three tasks
  *        2. Extract 59 oculomotor features (pure JS, see below)
- *        3. POST features to Flask /classify endpoint (XGBoost)
+ *        3. POST features to Flask /classify endpoint (deployed model)
  *        → renderAIResults() + save to /save_results
  *        → reveal PDF download button
  *
@@ -87,6 +87,9 @@
  * ============================================================
  */
 const BatteryController = (() => {
+  const API_BASE = (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
+  const TEST_TOKEN = new URLSearchParams(window.location.search).get('token');
+  const apiHeaders = () => TEST_TOKEN ? {'X-Test-Token': TEST_TOKEN} : {};
   // ── State ──────────────────────────────────────────────────────────────────
   let screenDiagonalInches = 15.6;  // default, overwritten in start()
 let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm; overwritten in start()                
@@ -625,7 +628,8 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   // ── Global Scope Variables for Report Generation ──
   let _lastFeatures = {};
   let _lastDataQuality = {}; // FIX BC-MATH-10: which features (if any) fell back to a no-data placeholder
-  let _lastResult = null; // unused in data collection mode
+  let _lastResult = null;
+  let _lastPrediction = null;
   let _lastFvRaw = []; // NEW
 
   async function getPlotlyImage(divId) {
@@ -677,9 +681,10 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
             fv_gaze: _lastFvRaw
         };
 
-        const response = await fetch('https://schizoeye-backend.onrender.com/generate-report', {
+        const response = await fetch(`${API_BASE}/generate-report`, {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: {'Content-Type': 'application/json', ...apiHeaders()},
+          credentials: 'include',
             body: JSON.stringify(payload)
         });
 
@@ -2372,7 +2377,7 @@ function cloneRows(rows) {
 
   // ── Main AI pipeline ──
   // ── Main AI pipeline ──
-  // ── Data Collection Mode: feature extraction only (no AI model) ──
+  // ── Feature extraction and model inference ──
   async function runAIClassification() {
     const statusEl = document.getElementById('ai-status-text');
     try {
@@ -2445,10 +2450,23 @@ function cloneRows(rows) {
 
       _lastFeatures = finalFeatures;
       _lastDataQuality = dataQuality;
-      // No model prediction — this is a data collection application
-      statusEl.textContent = `✓ Done — 59 oculomotor features extracted successfully.`;
+      statusEl.textContent = '⏳ Sending the 59 features to the inference API...';
+      const classifyResponse = await fetch(`${API_BASE}/classify`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...apiHeaders()},
+        credentials: 'include',
+        body: JSON.stringify({features: finalFeatures})
+      });
+      const classifyData = await classifyResponse.json();
+      if (!classifyResponse.ok || !classifyData.success) {
+        throw new Error(classifyData.error || 'Inference failed');
+      }
+      _lastPrediction = classifyData.prediction;
+      statusEl.textContent = `✓ Inference complete — ${classifyData.prediction.label}`;
       renderFeaturesOnly(finalFeatures);
+      renderPrediction(_lastPrediction);
       document.getElementById('btn-dl-pdf').style.display = 'inline-block';
+      await saveSessionToDatabase();
 
     } catch(err) {
       statusEl.textContent = '✗ Error: ' + err.message;
@@ -2462,6 +2480,12 @@ function cloneRows(rows) {
       FEATURE_ORDER.map(n => `<div style="break-inside:avoid;padding:2px 0"><span style="color:var(--dim)">${n}</span> <span style="color:var(--accent); font-weight:bold; float:right;">${features[n]}</span></div>`).join('') +
       '</div>';
     document.getElementById('ai-results-body').style.display = 'block';
+  }
+
+  function renderPrediction(prediction) {
+    const el = document.getElementById('ai-prediction-summary');
+    if (!el || !prediction) return;
+    el.textContent = `Model result: ${prediction.label} (${(prediction.confidence * 100).toFixed(1)}% confidence)`;
   }
 
   async function saveSessionToDatabase() {
@@ -2496,9 +2520,10 @@ function cloneRows(rows) {
         if (fixDistCanvas) fix_dist_img = fixDistCanvas.toDataURL('image/png');
       } catch(e) { console.warn("Could not capture fixation images:", e); }
 
-      const response = await fetch('https://schizoeye-backend.onrender.com/save_results', {
+      const response = await fetch(`${API_BASE}/save_results`, {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          headers: {'Content-Type': 'application/json', ...apiHeaders()},
+          credentials: 'include',
           body: JSON.stringify({
               subject_id: subjectId,
               patient_name: patientName || subjectId,
@@ -2530,7 +2555,23 @@ function cloneRows(rows) {
           })
       });
 
-      if (response.ok) {
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result.success) {
+        _lastResult = result;
+        _lastPrediction = result.prediction || _lastPrediction;
+        if (window.parent !== window) {
+          window.parent.postMessage({
+            type: 'SCHIZOEYE_TEST_COMPLETE',
+            result: {
+              assessment_id: result.session_id,
+              patient_id: result.patient_id,
+              prediction: result.prediction,
+              features: result.features,
+              feature_order: result.feature_order,
+              report_url: `${API_BASE}${result.report_url}`
+            }
+          }, '*');
+        }
         statusEl.textContent = '✓ Session saved to database successfully!';
         // Disable the save button after successful save
         const saveBtn = document.getElementById('btn-save-session');
@@ -2545,7 +2586,7 @@ function cloneRows(rows) {
         const returnWrap = document.getElementById('return-to-dashboard-wrap');
         if (returnWrap) returnWrap.style.display = 'block';
       } else {
-        statusEl.textContent = `⚠ Save failed: ${response.statusText}`;
+        statusEl.textContent = `⚠ Save failed: ${result.error || response.statusText}`;
       }
     } catch(err) {
       statusEl.textContent = `⚠ Database save failed: ${err.message}`;
