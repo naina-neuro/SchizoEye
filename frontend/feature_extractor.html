@@ -1,0 +1,1512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SchizoEye Feature Extractor — Offline Replay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0d0f;
+    --panel: #12161a;
+    --panel-border: #232a30;
+    --text: #d7dbdc;
+    --dim: #7c8890;
+    --accent: #4fd8c4;
+    --accent-dim: #2c6b63;
+    --warn: #f2a94a;
+    --bad: #ef6f6f;
+    --good: #6fcf97;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --sans: 'IBM Plex Sans', -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    margin: 0;
+    padding: 40px 24px 80px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  .scope-line {
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    margin-bottom: 28px;
+    opacity: 0.6;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    color: var(--dim);
+    font-size: 14px;
+    margin: 0 0 32px;
+    max-width: 64ch;
+  }
+  .subtitle code { color: var(--accent); font-family: var(--mono); }
+
+  section { margin-bottom: 28px; }
+  .section-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim);
+    margin-bottom: 10px;
+  }
+
+  .drop-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .drop {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 18px 14px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    position: relative;
+  }
+  .drop:hover { border-color: var(--accent-dim); }
+  .drop.filled { border-color: var(--accent); background: #0f1f1c; }
+  .drop input { display: none; }
+  .drop .task { font-family: var(--mono); font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+  .drop .fname { font-size: 13px; color: var(--text); word-break: break-all; }
+  .drop .placeholder { font-size: 13px; color: var(--dim); }
+  .drop .rowcount { font-family: var(--mono); font-size: 11px; color: var(--accent); margin-top: 4px; }
+
+  .settings {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .field label {
+    display: block;
+    font-size: 11px;
+    color: var(--dim);
+    margin-bottom: 4px;
+  }
+  .field input {
+    width: 100%;
+    background: #0d1114;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 7px 9px;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .settings-note { grid-column: 1 / -1; font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  button.compute {
+    width: 100%;
+    background: var(--accent);
+    color: #06201c;
+    border: none;
+    border-radius: 6px;
+    padding: 13px;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    margin-top: 18px;
+    transition: background 0.15s ease;
+  }
+  button.compute:hover { background: #6ee6d4; }
+  button.compute:disabled { background: var(--panel-border); color: var(--dim); cursor: not-allowed; }
+
+  .error-box {
+    background: #241213;
+    border: 1px solid #5c2626;
+    color: #ffb0b0;
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    margin-top: 16px;
+    display: none;
+  }
+
+  .legend { display: flex; gap: 18px; margin-bottom: 14px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+  .domain-group {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .domain-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 7px 14px; font-size: 13px; border-bottom: 1px solid #191f24; }
+  tr:last-child td { border-bottom: none; }
+  td.fname { font-family: var(--mono); color: var(--dim); font-size: 12px; width: 42%; }
+  td.fval { font-family: var(--mono); text-align: right; width: 20%; }
+  td.frange { font-family: var(--mono); color: #545e64; font-size: 11px; text-align: right; width: 24%; }
+  td.fstatus { text-align: right; width: 14%; }
+  .badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 10px; display: inline-block; }
+  .badge.ok { color: var(--good); background: #10241a; }
+  .badge.bound { color: var(--warn); background: #2b210f; }
+  .badge.na { color: var(--bad); background: #2b1414; }
+
+  .json-actions { display: flex; gap: 10px; margin-bottom: 10px; }
+  .json-actions button {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    padding: 7px 13px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .json-actions button:hover { border-color: var(--accent); color: var(--accent); }
+  pre.json {
+    background: #0d1114;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: #b9d9d3;
+    overflow-x: auto;
+    max-height: 420px;
+  }
+  .footnote { color: var(--dim); font-size: 11.5px; margin-top: 34px; max-width: 66ch; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="scope-line"></div>
+  <h1>SchizoEye Feature Extractor</h1>
+  <p class="subtitle">
+    Replays the three raw gaze CSVs (free viewing, SPEM, fixation+antisaccade)
+    through the same 59-feature extraction pipeline as <code>battery-controller.js</code> —
+    without re-running the actual test. Useful for checking the extraction
+    math on a recording you already have.
+  </p>
+
+  <section>
+    <div class="section-label">01 — RAW GAZE FILES</div>
+    <div class="drop-row">
+      <label class="drop" id="drop-fv">
+        <input type="file" accept=".csv" id="file-fv">
+        <div class="task">Free Viewing</div>
+        <div class="placeholder" id="label-fv">fv_gaze_raw_*.csv</div>
+        <div class="rowcount" id="rows-fv"></div>
+      </label>
+      <label class="drop" id="drop-sp">
+        <input type="file" accept=".csv" id="file-sp">
+        <div class="task">SPEM</div>
+        <div class="placeholder" id="label-sp">spem_*.csv</div>
+        <div class="rowcount" id="rows-sp"></div>
+      </label>
+      <label class="drop" id="drop-sz">
+        <input type="file" accept=".csv" id="file-sz">
+        <div class="task">Fixation + Antisaccade</div>
+        <div class="placeholder" id="label-sz">sz_*.csv</div>
+        <div class="rowcount" id="rows-sz"></div>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-label">02 — SESSION PARAMETERS</div>
+    <div class="settings">
+      <div class="field">
+        <label for="px-per-deg">px per degree</label>
+        <input type="number" id="px-per-deg" value="37" step="0.1">
+      </div>
+      <div class="field">
+        <label for="screen-w">screen width (px)</label>
+        <input type="number" id="screen-w" value="1920" step="1">
+      </div>
+      <div class="field">
+        <label for="screen-h">screen height (px)</label>
+        <input type="number" id="screen-h" value="1080" step="1">
+      </div>
+      <div class="settings-note">
+        These aren't stored in the raw CSVs. Use the recording session's real calibrated px/deg
+        and screen resolution if you know them — 37px/deg and 1920×1080 are only fallback defaults
+        (see <code>LEGACY_REFERENCE_PPD</code> in battery-controller.js). Screen size only affects
+        <code>fv_disp_mean</code> and the antisaccade centre fallback.
+      </div>
+    </div>
+    <button class="compute" id="compute-btn" disabled>Load all 3 CSVs to compute features</button>
+    <div class="error-box" id="error-box"></div>
+  </section>
+
+  <section id="results-section" style="display:none;">
+    <div class="section-label">03 — 59 FEATURES</div>
+    <div class="legend">
+      <div class="legend-item"><span class="dot" style="background:var(--good)"></span> within bounds</div>
+      <div class="legend-item"><span class="dot" style="background:var(--warn)"></span> at a bound (clipped)</div>
+      <div class="legend-item"><span class="dot" style="background:var(--bad)"></span> insufficient data — neutral placeholder, not measured</div>
+    </div>
+    <div id="domain-tables"></div>
+
+    <div class="json-actions">
+      <button id="copy-json">Copy JSON</button>
+      <button id="download-json">Download JSON</button>
+    </div>
+    <pre class="json" id="json-output"></pre>
+  </section>
+
+  <p class="footnote">
+    This tool embeds a direct extraction of the pure feature-computation
+    functions from battery-controller.js (event detection, spectral
+    gain/logSNR/RMSE, antisaccade trial scoring, bounds/finalization) —
+    it does not touch the camera, calibration, or UI portions of the app.
+    Runs entirely in your browser; no data leaves this page.
+  </p>
+</div>
+
+<script>
+/* ============================================================
+   Embedded extraction core — see accompanying comment markers
+   (FIX BC-MATH-*) for the reasoning behind each piece. Extracted
+   verbatim from battery-controller.js except estimateScreenGeometry,
+   which now takes explicit width/height/ppd instead of reading a
+   live session's window + calibration globals (see its own comment).
+   ============================================================ */
+</script>
+<script id="core-script">
+const LEGACY_REFERENCE_PPD = 37.0;
+
+const BOUNDS = {
+  // Free viewing — counts and durations (dimensionless / ms — no spatial conversion)
+  "fv_fnum_mean": { lower: 10.0,  upper: 40.0   },
+  "fv_fdur_mean": { lower: 150.0, upper: 900.0  },
+  "fv_snum_mean": { lower: 10.0,  upper: 40.0   },
+  "fv_sdur_mean": { lower: 10.0,  upper: 100.0  },
+  // Free viewing — spatial features in DEGREES
+  "fv_samp_mean": { lower: 0.5,   upper: 10.0   },  // saccade amplitude (°)
+  "fv_spv_mean":  { lower: 30.0,  upper: 600.0  },  // peak velocity (°/s)
+  "fv_sav_mean":  { lower: 15.0,  upper: 300.0  },  // avg velocity (°/s)
+"fv_spl_mean":  { lower: 100.0, upper: 1500.0 },
+  "fv_disp_mean": { lower: 0.3,   upper: 2.0    },  // dimensionless ratio
+  // SPEM — dimensionless / ms
+  "HS4_Mean_H_logSNR": { lower: 0.2,  upper: 3.5   },
+  "HS4_Mean_H_gain":   { lower: 0.4,  upper: 1.3   },
+  "HS4_FixNum":        { lower: 0.0,  upper: 120.0  },
+  "HS4_FixDur":        { lower: 80.0, upper: 1000.0 },
+  "HS4_SacNum":        { lower: 0.0,  upper: 120.0  },
+  "HS4_SacDur":        { lower: 8.0,  upper: 100.0  },
+ 
+"HS4_Mean_H_RMSE":   { lower: 0.5,   upper: 12.0  },  // FIX BC-MATH-2: was 0.5-5.0 and saturating on real data (see audit — the one available reference session hit this exact ceiling on all 5 RMSE features); webcam gaze-estimation noise alone is commonly 1-3 deg RMS, so a 5 deg ceiling clips legitimate noisy trials rather than only broken ones
+  // SPEM — spatial in DEGREES
+  "HS4_SacAmp":        { lower: 0.3,  upper: 15.0   },  // (°)
+  "HS4_SacPV":         { lower: 20.0, upper: 500.0  },  // (°/s)
+  "HS4_SacAV":         { lower: 10.0, upper: 250.0  },  // (°/s)
+  // LS2 — dimensionless / ms
+  "LS2_Mean_H_logSNR": { lower: 0.2,  upper: 3.5   },
+  "LS2_Mean_H_gain":   { lower: 0.4,  upper: 1.3   },
+  "LS2_Mean_V_logSNR": { lower: 0.2,  upper: 3.5   },
+  "LS2_Mean_V_gain":   { lower: 0.4,  upper: 1.3   },
+  "LS2_FixNum":        { lower: 0.0,  upper: 80.0   },  // FIX BC-MATH-3: was 3.0 — inconsistent with HS4's 0.0 floor for the exact same kind of count; 0 fixations is a legitimate (if poor) outcome, not an impossible one
+  "LS2_FixDur":        { lower: 80.0, upper: 1000.0 },
+  "LS2_SacNum":        { lower: 0.0,  upper: 80.0   },  // FIX BC-MATH-3
+  "LS2_SacDur":        { lower: 8.0,  upper: 60.0   },
+"LS2_Mean_H_RMSE":   { lower: 0.5,   upper: 10.0  },  // FIX BC-MATH-2 (see HS4_Mean_H_RMSE)
+ "LS2_Mean_V_RMSE":   { lower: 0.5,   upper: 10.0  },  // FIX BC-MATH-2
+  // LS2 — spatial in DEGREES
+  "LS2_SacAmp":        { lower: 0.3,  upper: 8.0    },
+  "LS2_SacPV":         { lower: 20.0, upper: 300.0  },
+  "LS2_SacAV":         { lower: 10.0, upper: 150.0  },
+  // LS4 — dimensionless / ms
+  "LS4_Mean_H_logSNR": { lower: 0.2,  upper: 3.5   },
+  "LS4_Mean_H_gain":   { lower: 0.2,  upper: 1.5   },
+  "LS4_Mean_V_logSNR": { lower: 0.2,  upper: 3.5   },
+  "LS4_Mean_V_gain":   { lower: 0.2,  upper: 1.5   },
+  "LS4_FixNum":        { lower: 0.0,  upper: 100.0  },  // FIX BC-MATH-3
+  "LS4_FixDur":        { lower: 80.0, upper: 800.0  },
+  "LS4_SacNum":        { lower: 0.0,  upper: 100.0  },  // FIX BC-MATH-3
+  "LS4_SacDur":        { lower: 8.0,  upper: 80.0   },
+ "LS4_Mean_H_RMSE":   { lower: 0.5,   upper: 12.0  },  // FIX BC-MATH-2
+ "LS4_Mean_V_RMSE":   { lower: 0.5,   upper: 12.0  },  // FIX BC-MATH-2
+  // LS4 — spatial in DEGREES
+  "LS4_SacAmp":        { lower: 0.3,  upper: 10.0   },
+  "LS4_SacPV":         { lower: 20.0, upper: 400.0  },
+  "LS4_SacAV":         { lower: 10.0, upper: 150.0  },
+  // Fixation stability — counts and durations
+  "fix_fs_fn":  { lower: 0.0,  upper: 25.0    },
+"fix_fs_fd":  { lower: 100.0, upper: 5000.0 },  // was 100-10000
+  "fix_fs_sn":  { lower: 0.0,  upper: 25.0    },
+  "fix_fs_spl": { lower: 0.0,  upper: 600.0   },  // cumulative scanpath (°)
+  "fix_fs_sa":  { lower: 0.0,  upper: 6.0     },  // saccade amplitude (°)
+  // Fixation distractor — counts and durations
+  "fix_fd_fn":  { lower: 0.0,  upper: 30.0    },
+"fix_fd_fd":  { lower: 100.0, upper: 5000.0 },  // was 100-10000
+  "fix_fd_sn":  { lower: 0.0,  upper: 30.0    },
+  "fix_fd_spl": { lower: 0.0,  upper: 500.0   },  // cumulative scanpath (°)
+  "fix_fd_sa":  { lower: 0.0,  upper: 6.0     },  // saccade amplitude (°)
+  // Antisaccade — rates (0–1) and latency (ms)
+  "antisaccade_error_rate":            { lower: 0.0,   upper: 1.0   },
+  "antisaccade_correction_error_rate": { lower: 0.0,   upper: 1.0   },
+  "antisaccade_latency":               { lower: 100.0, upper: 900.0 },
+  "antisaccade_accuracy":              { lower: 0.0,   upper: 1.0   },  // FIX BC-MATH-4: was capped at 0.99 — a participant who lands correctly on all 10 trials has 100% accuracy; the old cap silently rewrote a genuinely perfect score into "one trial short of perfect" (confirmed against the one real reference session: error_rate=0.30 with correction_error_rate=0% implies true accuracy=1.00, which the old bound clamped to 0.99)
+};
+
+const CONFIG = {
+  fv: {
+    dispersionThresholdDeg: 2.0,
+    minFixMs: 60,
+    ampDegPerUnit:          1.0,
+    peakVelocityScale:      1.0 ,
+    avgVelocityScale:       1.0 ,
+    scanpathScale:          1.0 ,
+    dispersionScale:        1.25,
+  },
+  fixationSingle: {
+    phase: 'FIX_NONE',
+    dispersionThresholdDeg: 1.5,
+    minFixMs: 60,
+    ampDegPerUnit:  1.0,
+    scanpathScale:  1.0 ,   
+  },
+  fixationDistractor: {
+    phase: ['FIX_SINGLE', 'FIX_MULTI'],
+    dispersionThresholdDeg: 2.0,
+    minFixMs: 60,
+    ampDegPerUnit:  1.0,
+    scanpathScale:  1.0 ,
+  },
+  pursuit: {
+    sampleRate: 30,
+    rmseScale: 1.0,
+    minFixMs: 60,
+    phaseConfig: {
+      'Horizontal_0.4Hz': {
+  residualDispersionThresholdDeg: 1.0,   // was 2.5 — too loose, merge too many points
+  ampDegPerUnit:       1.0,
+  peakVelocityScale:   1.0 ,
+  avgVelocityScale:    1.0 ,
+},
+'Lissajous_0.2Hz': {
+  residualDispersionThresholdDeg: 0.8,   // was 1.5
+  ampDegPerUnit:       1.0,
+  peakVelocityScale:   1.0 ,
+  avgVelocityScale:    1.0 ,
+},
+'Lissajous_0.4Hz': {
+  residualDispersionThresholdDeg: 2.0,   // was 5.0 — way too loose
+  ampDegPerUnit:       1.0,
+  peakVelocityScale:   1.0 ,
+  avgVelocityScale:    1.0 ,
+},
+    },
+  },
+  antisaccade: {
+    trialGapMs:                 700,
+    // FIX BC-MATH-5: was 15.0 deg/s. The antisaccade literature consistently
+    // uses ~30 deg/s for onset detection (Gitelman 2002, widely cited; see
+    // also ScienceDirect's Antisaccade overview using the same figure), with
+    // some studies as low as 20 or as high as 40. 15 deg/s is below every
+    // value we found in the literature and is exactly the range where
+    // webcam positional jitter alone can cross threshold on a single frame.
+    velocityThresholdDegPerSec: 30.0,
+    // New: minimum sustained duration and net amplitude before a threshold
+    // crossing counts as a real saccade, not a noise spike — analogous to
+    // the same guards added to detectEventsEK() and standard in the
+    // literature (e.g. minimum amplitude/velocity/latency criteria in
+    // Karatekin & Asarnow-style antisaccade scoring; PLOS ONE 2011 used a
+    // 1.5 deg minimum saccade length with a 40 deg/s threshold).
+    minSaccadeDurationMs:        20,
+    minSaccadeAmplitudeDeg:      1.0,
+    // New: saccades detected faster than this are anticipatory/artifactual
+    // and are excluded from the LATENCY estimate specifically (error/
+    // direction classification still uses them) — standard practice, e.g.
+    // PLOS ONE (2011): "SRTs shorter than 80 ms were considered anticipatory
+    // and discarded."
+    anticipatoryLatencyMs:       80,
+    landingToleranceDeg:         5,
+  },
+  // Shared adaptive event-detection parameters (see detectEventsEK).
+  // FIX BC-MATH-13: this needed two iterations to get right, and both are
+  // worth recording so the next round of tuning doesn't repeat them.
+  //   Attempt 1 was lambda=4 with minThresholdDegPerSec=15,
+  //   maxThresholdDegPerSec=80 -- reasoning: real webcam noise is much
+  //   higher than the infrared-tracker noise the original lambda=6 was
+  //   calibrated against (Engbert & Kliegl 2003), so lower lambda + a
+  //   ceiling should let genuine saccades through even on noisy sessions.
+  //   Tested against a real post-fix session this reasoning was based on
+  //   (HS4/LS2/LS4 SacNum 0-1 across three 20s trials, fv_fnum_mean
+  //   pinned at its floor, fix_fs/fd_fd pinned at their ceiling -- i.e.
+  //   near-total non-detection almost everywhere the adaptive detector
+  //   runs). That attempt made detection WORSE, not better: simulating a
+  //   realistic short (20-35ms) 1-2deg microsaccade at ~35Hz showed its
+  //   own SMOOTHED (+/-2-sample) velocity typically lands only ~8-16
+  //   deg/s -- BELOW the 15 deg/s floor -- so the floor itself was
+  //   silently discarding genuine small saccades before the noise-based
+  //   ceiling ever came into play. The ceiling of 80 was also too high to
+  //   matter: fixing the real session's under-detection only needed the
+  //   threshold capped somewhere well under the ~8-16 deg/s a genuine
+  //   short saccade's smoothed velocity actually reaches, not 80.
+  //   Attempt 2 (current values) was calibrated by simulating both small
+  //   (1-2deg, fixation/microsaccade-scale) and large (4-6deg, SPEM
+  //   catch-up-scale) saccades against synthetic noise swept from clean
+  //   (0.05deg SD) to quite poor (1.5deg SD) tracking, and choosing the
+  //   lambda/floor/ceiling combination that recovered close to the true
+  //   injected count across that whole range without either
+  //   under-detecting at realistic noise levels or exploding into false
+  //   positives at high noise. lambda=3 (not 4 or 6), floor=3 (not 15),
+  //   ceiling=25 (not 80) was the best-performing combination tested.
+  // This is still simulated-noise calibration, not real-recording
+  // calibration -- see VALIDATION notes; re-tune here in one place if
+  // real sessions show it still needs adjustment either direction.
+  eventDetection: {
+    lambda: 3,
+    minSaccadeDurationMs: 20,
+    minSaccadeAmplitudeDeg: 0.3,
+    minThresholdDegPerSec: 3,
+    maxThresholdDegPerSec: 25,
+  },
+};
+
+const FEATURE_ORDER = [
+  "fv_fnum_mean",
+  "fv_fdur_mean",
+  "fv_snum_mean",
+  "fv_sdur_mean",
+  "fv_samp_mean",
+  "fv_spv_mean",
+  "fv_sav_mean",
+  "fv_spl_mean",
+  "fv_disp_mean",
+  "HS4_Mean_H_logSNR",
+  "HS4_Mean_H_RMSE",
+  "HS4_Mean_H_gain",
+  "HS4_FixNum",
+  "HS4_FixDur",
+  "HS4_SacNum",
+  "HS4_SacDur",
+  "HS4_SacAmp",
+  "HS4_SacPV",
+  "HS4_SacAV",
+  "LS2_Mean_H_logSNR",
+  "LS2_Mean_H_RMSE",
+  "LS2_Mean_H_gain",
+  "LS2_Mean_V_logSNR",
+  "LS2_Mean_V_RMSE",
+  "LS2_Mean_V_gain",
+  "LS2_FixNum",
+  "LS2_FixDur",
+  "LS2_SacNum",
+  "LS2_SacDur",
+  "LS2_SacAmp",
+  "LS2_SacPV",
+  "LS2_SacAV",
+  "LS4_Mean_H_logSNR",
+  "LS4_Mean_H_RMSE",
+  "LS4_Mean_H_gain",
+  "LS4_Mean_V_logSNR",
+  "LS4_Mean_V_RMSE",
+  "LS4_Mean_V_gain",
+  "LS4_FixNum",
+  "LS4_FixDur",
+  "LS4_SacNum",
+  "LS4_SacDur",
+  "LS4_SacAmp",
+  "LS4_SacPV",
+  "LS4_SacAV",
+  "fix_fs_fn",
+  "fix_fs_fd",
+  "fix_fs_sn",
+  "fix_fs_sa",
+  "fix_fs_spl",
+  "fix_fd_fn",
+  "fix_fd_fd",
+  "fix_fd_sn",
+  "fix_fd_sa",
+  "fix_fd_spl",
+  "antisaccade_error_rate",
+  "antisaccade_correction_error_rate",
+  "antisaccade_latency",
+  "antisaccade_accuracy"
+];
+
+const NA_FALLBACK_MIDPOINT = new Set([
+  "antisaccade_latency",
+  "HS4_SacDur", "HS4_SacAmp", "HS4_SacPV", "HS4_SacAV",
+  "LS2_SacDur", "LS2_SacAmp", "LS2_SacPV", "LS2_SacAV",
+  "LS4_SacDur", "LS4_SacAmp", "LS4_SacPV", "LS4_SacAV",
+  "HS4_Mean_H_logSNR", "HS4_Mean_H_RMSE", "HS4_Mean_H_gain",
+  "LS2_Mean_H_logSNR", "LS2_Mean_H_RMSE", "LS2_Mean_H_gain",
+  "LS2_Mean_V_logSNR", "LS2_Mean_V_RMSE", "LS2_Mean_V_gain",
+  "LS4_Mean_H_logSNR", "LS4_Mean_H_RMSE", "LS4_Mean_H_gain",
+  "LS4_Mean_V_logSNR", "LS4_Mean_V_RMSE", "LS4_Mean_V_gain",
+  "fix_fs_sa", "fix_fd_sa",
+  "fv_samp_mean", "fv_spv_mean", "fv_sav_mean", "fv_sdur_mean", "fv_fdur_mean",
+  "HS4_FixDur", "LS2_FixDur", "LS4_FixDur",
+]);
+
+function px2deg(px, ppd) { return px / (Number.isFinite(ppd) && ppd > 0 ? ppd : pxPerDeg); }
+
+function normalizeFv(rows, referencePpd) {
+    const ppd = Number.isFinite(referencePpd) && referencePpd > 0 ? referencePpd : pxPerDeg;
+  return cloneRows(rows)
+    .map((row) => {
+      row.tMs = Number(row.timestamp_ms);
+      row.tSec = row.tMs / 1000.0;
+      row.x = Number(row.x);
+      row.y = Number(row.y);
+      row.velocity = Number(row.velocity);
+      row.image_index = Number(row.image_index);
+      row.is_blink = Number(row.is_blink);
+      row.confidence = Number(row.confidence);
+      row.xDeg = row.x / ppd;
+      row.yDeg = row.y / ppd;
+      row.velocityDeg = row.velocity / ppd;
+      return row;
+    })
+    .sort((a, b) => a.image_index - b.image_index || a.tMs - b.tMs);
+}
+
+function normalizeSpem(rows, referencePpd) {
+  const ppd = Number.isFinite(referencePpd) && referencePpd > 0 ? referencePpd : pxPerDeg;
+  return cloneRows(rows)
+    .map((row) => {
+      row.tSec = Number(row.Timestamp);
+      row.tMs = row.tSec * 1000.0;
+      row.TargetX = Number(row.TargetX);
+      row.TargetY = Number(row.TargetY);
+      row.EyeX = Number(row.EyeX);
+      row.EyeY = Number(row.EyeY);
+      row.TargetXDeg = row.TargetX / ppd;
+      row.TargetYDeg = row.TargetY / ppd;
+      row.EyeXDeg    = row.EyeX / ppd;
+      row.EyeYDeg    = row.EyeY / ppd;
+      row.TaskPhase = String(row.TaskPhase);
+      return row;
+    })
+    .sort((a, b) => a.tSec - b.tSec);
+}
+
+function normalizeSz(rows, referencePpd) {
+  const ppd = Number.isFinite(referencePpd) && referencePpd > 0 ? referencePpd : pxPerDeg;
+  return cloneRows(rows)
+    .map((row) => {
+      row.tMs = Number(row.Timestamp_ms);
+      row.tSec = row.tMs / 1000.0;
+      row.Gaze_X = Number(row.Gaze_X);
+      row.Gaze_Y = Number(row.Gaze_Y);
+      row.Target_X = Number(row.Target_X);
+      row.Target_Y = Number(row.Target_Y);
+      row.Gaze_XDeg  = row.Gaze_X / ppd;
+      row.Gaze_YDeg  = row.Gaze_Y / ppd;
+      row.Target_XDeg = row.Target_X / ppd;
+      row.Target_YDeg = row.Target_Y / ppd;
+      row.Phase = String(row.Phase);
+      return row;
+    })
+    .sort((a, b) => a.tMs - b.tMs);
+}
+
+function groupBy(rows, key) {
+  const map = new Map();
+  for (const row of rows) {
+    const val = row[key];
+    if (!map.has(val)) map.set(val, []);
+    map.get(val).push(row);
+  }
+  return map;
+}
+
+function _ft_mean(arr) {
+  if (!arr || arr.length === 0) return NaN;
+  let sum = 0;
+  for (const v of arr) sum += v;
+  return sum / arr.length;
+}
+
+function _ft_median(arr) {
+  if (!arr || arr.length === 0) return NaN;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2) return sorted[mid];
+  return 0.5 * (sorted[mid - 1] + sorted[mid]);
+}
+
+function _ft_sum(arr) {
+  if (!arr || arr.length === 0) return 0;
+  let s = 0;
+  for (const v of arr) s += v;
+  return s;
+}
+
+function ekAxisVelocity(rows, xKey, yKey, tSecKey) {
+  const n = rows.length;
+  const vx = new Array(n).fill(0);
+  const vy = new Array(n).fill(0);
+  for (let i = 0; i < n; i += 1) {
+    const i0 = Math.max(0, i - 2);
+    const i1 = Math.min(n - 1, i + 2);
+    const dt = rows[i1][tSecKey] - rows[i0][tSecKey];
+    if (dt > 1e-6) {
+      vx[i] = (rows[i1][xKey] - rows[i0][xKey]) / dt;
+      vy[i] = (rows[i1][yKey] - rows[i0][yKey]) / dt;
+    }
+  }
+  return { vx, vy };
+}
+
+function ekMedianBasedSD(v) {
+  const med = _ft_median(v);
+  const sqDev = v.map((x) => (x - med) * (x - med));
+  return Math.sqrt(Math.max(_ft_median(sqDev), 0));
+}
+
+function detectEventsEK(rows, detectXKey, detectYKey, measureXKey, measureYKey, tSecKey, tMsKey, opts) {
+  const cfg = Object.assign(
+    // FIX BC-MATH-13 (revised after testing against realistic simulated
+    // noise -- see comment block below CONFIG.eventDetection for the full
+    // story, including a first attempt at this fix that made things
+    // WORSE and why): lambda lowered from the Engbert & Kliegl (2003)
+    // infrared-tracker default of 6 to 3, with an absolute [min,max] band
+    // on the resulting threshold itself.
+    { lambda: 3, minDurationMs: 20, minAmplitude: 0.3,
+      minThresholdDegPerSec: 3, maxThresholdDegPerSec: 25 },
+    opts || {}
+  );
+  const sorted = [...rows].sort((a, b) => a[tSecKey] - b[tSecKey]);
+  const n = sorted.length;
+  if (n < 5) return { fixations: [], saccades: [], rows: sorted };
+
+  const { vx, vy } = ekAxisVelocity(sorted, detectXKey, detectYKey, tSecKey);
+  const clampEta = (raw) => Math.min(Math.max(raw, cfg.minThresholdDegPerSec), cfg.maxThresholdDegPerSec);
+  const etaX = clampEta(cfg.lambda * ekMedianBasedSD(vx));
+  const etaY = clampEta(cfg.lambda * ekMedianBasedSD(vy));
+
+  let fast = new Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const ex = vx[i] / etaX, ey = vy[i] / etaY;
+    fast[i] = (ex * ex + ey * ey) > 1;
+  }
+
+  const dts = [];
+  for (let i = 1; i < n; i += 1) dts.push((sorted[i][tSecKey] - sorted[i - 1][tSecKey]) * 1000);
+  const medDt = _ft_median(dts) || 33;
+  const minSamples = Math.max(2, Math.round(cfg.minDurationMs / medDt));
+
+  // Pass 1: find "fast" runs, and demote any that fail the sustained-
+  // duration or minimum-amplitude criteria back to "fixation" — this is
+  // what keeps single noisy frames from fragmenting fixations.
+  const runsOf = (flags) => {
+    const out = [];
+    let i = 0;
+    while (i < n) {
+      let j = i;
+      while (j + 1 < n && flags[j + 1] === flags[i]) j += 1;
+      out.push({ flag: flags[i], start: i, end: j });
+      i = j + 1;
+    }
+    return out;
+  };
+
+  let pass1 = runsOf(fast);
+  const corrected = fast.slice();
+  for (const run of pass1) {
+    if (!run.flag) continue;
+    const nSamples = run.end - run.start + 1;
+    const amp = Math.hypot(
+      sorted[run.end][measureXKey] - sorted[run.start][measureXKey],
+      sorted[run.end][measureYKey] - sorted[run.start][measureYKey]
+    );
+    if (nSamples < minSamples || amp < cfg.minAmplitude) {
+      for (let k = run.start; k <= run.end; k += 1) corrected[k] = false;
+    }
+  }
+
+  // Pass 2: final runs on the corrected flags — adjacent fixation runs
+  // that were only split by a now-rejected noise blip merge naturally.
+  const finalRuns = runsOf(corrected);
+  const fixations = [];
+  const saccades = [];
+  for (const run of finalRuns) {
+    const durMs = sorted[run.end][tMsKey] - sorted[run.start][tMsKey];
+    if (run.flag) {
+      // FIX BC-MATH-14: peak velocity was computed from the SMOOTHED
+      // (+/-2-sample central-difference) velocity of the DETECT channel
+      // (the residual, for pursuit) -- for a short event, that smoothing
+      // window pulls in slower neighbouring samples and can dilute the
+      // peak below the plain path-length/duration AVERAGE velocity
+      // computed just below from the raw MEASURE channel, which is
+      // mathematically impossible for one continuous movement (confirmed
+      // against a real session: HS4_SacPV=34.2 < HS4_SacAV=41.11 for a
+      // single detected saccade). Peak and average now come from the
+      // SAME per-segment raw (unsmoothed) measure-channel speeds, which
+      // guarantees peak >= average by construction: average = total
+      // distance / total duration is a duration-weighted mean of the
+      // per-segment speeds, and a weighted mean can never exceed the
+      // maximum of the values it's averaging.
+      let peakV = 0, pathLen = 0;
+      for (let k = run.start + 1; k <= run.end; k += 1) {
+        const dt = Math.max(sorted[k][tSecKey] - sorted[k - 1][tSecKey], 1e-9);
+        const segDist = Math.hypot(
+          sorted[k][measureXKey] - sorted[k - 1][measureXKey],
+          sorted[k][measureYKey] - sorted[k - 1][measureYKey]
+        );
+        pathLen += segDist;
+        const segV = segDist / dt;
+        if (segV > peakV) peakV = segV;
+      }
+      const durSec = Math.max(sorted[run.end][tSecKey] - sorted[run.start][tSecKey], 1e-9);
+      saccades.push({
+        start: run.start, end: run.end,
+        startMs: sorted[run.start][tMsKey], endMs: sorted[run.end][tMsKey],
+        durMs,
+        ampPx: Math.hypot(
+          sorted[run.end][measureXKey] - sorted[run.start][measureXKey],
+          sorted[run.end][measureYKey] - sorted[run.start][measureYKey]
+        ),
+        pathPx: pathLen,
+        peakVelocityPxPerSec: peakV,
+        avgVelocityPxPerSec: pathLen / durSec,
+      });
+    } else {
+      const seg = sorted.slice(run.start, run.end + 1);
+      fixations.push({
+        start: run.start, end: run.end,
+        startMs: sorted[run.start][tMsKey], endMs: sorted[run.end][tMsKey],
+        durMs,
+        cx: _ft_mean(seg.map((r) => r[measureXKey])),
+        cy: _ft_mean(seg.map((r) => r[measureYKey])),
+      });
+    }
+  }
+  return { fixations, saccades, rows: sorted };
+}
+
+function estimateScreenGeometry(screenWidthPx, screenHeightPx, ppd) {
+  // Adapted for offline replay: the original live app read window.innerWidth/
+  // innerHeight (the recording session's own browser window) and an
+  // implicit pxPerDeg closure variable. This standalone tool has no such
+  // "live session" window, so both are passed explicitly instead —
+  // otherwise identical formula to the original.
+  const wDeg = px2deg(screenWidthPx, ppd);
+  const hDeg = px2deg(screenHeightPx, ppd);
+  return { width: wDeg, height: hDeg, diag: Math.hypot(wDeg, hDeg) };
+}
+
+function resampleLinear(times, values, sampleRate) {
+  if (!times.length || !values.length || times.length !== values.length) {
+    return { times: [], values: [] };
+  }
+  const start = times[0];
+  const end = times[times.length - 1];
+  const dt = 1.0 / sampleRate;
+  const outT = [];
+  const outY = [];
+  let j = 0;
+  for (let t = start; t <= end + 1e-9; t += dt) {
+    while (j < times.length - 2 && times[j + 1] < t) {
+      j += 1;
+    }
+    const t0 = times[j];
+    const t1 = times[Math.min(j + 1, times.length - 1)];
+    const y0 = values[j];
+    const y1 = values[Math.min(j + 1, values.length - 1)];
+    let y = y0;
+    if (t1 > t0) {
+      const alpha = (t - t0) / (t1 - t0);
+      y = y0 + alpha * (y1 - y0);
+    }
+    outT.push(t);
+    outY.push(y);
+  }
+  return { times: outT, values: outY };
+}
+
+function hannWindow(values) {
+  const n = values.length;
+  if (n < 2) return values.slice();
+  const out = new Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const w = 0.5 - 0.5 * Math.cos((2.0 * Math.PI * i) / (n - 1));
+    out[i] = values[i] * w;
+  }
+  return out;
+}
+
+function amplitudeAtFrequency(times, values, frequencyHz) {
+  if (!times.length || !values.length) return NaN;
+  const centered = hannWindow(values.map((v) => v - _ft_mean(values)));
+  const n = centered.length;
+  let re = 0;
+  let im = 0;
+  for (let i = 0; i < n; i += 1) {
+    const angle = -2.0 * Math.PI * frequencyHz * times[i];
+    re += centered[i] * Math.cos(angle);
+    im += centered[i] * Math.sin(angle);
+  }
+  // Hann windowing attenuates in-band amplitude by a factor of ~0.5 (its
+  // coherent gain) — rescale so the returned amplitude stays comparable
+  // to the un-windowed estimate used previously.
+  return (2.0 * Math.hypot(re, im)) / Math.max(n * 0.5, 1e-9);
+}
+
+function periodogram(values, sampleRate) {
+  const centered = hannWindow(values.map((v) => v - _ft_mean(values)));
+  const n = centered.length;
+  const maxK = Math.floor(n / 2);
+  const freqs = new Array(maxK + 1);
+  const power = new Array(maxK + 1);
+  // Hann window power (mean-square) gain correction, so absolute power
+  // values stay on roughly the same scale as the previous un-windowed
+  // version (the noise-vs-signal RATIO that logSNR actually uses is
+  // unaffected either way, but keeping the scale stable avoids silently
+  // breaking anyone relying on the raw power numbers elsewhere).
+  const windowPowerGain = 0.375; // mean-square of a Hann window
+  for (let k = 0; k <= maxK; k += 1) {
+    let re = 0;
+    let im = 0;
+    const angleConst = (-2.0 * Math.PI * k) / n;
+    for (let i = 0; i < n; i += 1) {
+      const angle = angleConst * i;
+      re += centered[i] * Math.cos(angle);
+      im += centered[i] * Math.sin(angle);
+    }
+    freqs[k] = (k * sampleRate) / n;
+    power[k] = (re * re + im * im) / Math.max(n * windowPowerGain, 1e-9);
+  }
+  return { freqs, power };
+}
+
+function nearestIndex(values, target) {
+  let best = 0;
+  let bestDiff = Infinity;
+  for (let i = 0; i < values.length; i += 1) {
+    const diff = Math.abs(values[i] - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function computeLogSNR(times, values, frequencyHz, sampleRate) {
+  const uniform = resampleLinear(times, values, sampleRate);
+  if (uniform.values.length < 8) return NaN;
+  const { freqs, power } = periodogram(uniform.values, sampleRate);
+  const idx = nearestIndex(freqs, frequencyHz);
+  const signal = power[idx];
+  const noiseBins = [];
+  for (let i = 0; i < freqs.length; i += 1) {
+    const delta = Math.abs(freqs[i] - frequencyHz);
+    if (delta > 0.05 && delta <= 0.30) noiseBins.push(power[i]);
+  }
+  const noise = noiseBins.length ? _ft_mean(noiseBins) : _ft_mean(power.filter((_, i) => i !== idx));
+  const snr = signal / Math.max(noise, 1e-9);
+  return Math.log10(Math.max(snr, 1e-9));
+}
+
+function computeGain(times, eyeValues, targetValues, frequencyHz, sampleRate) {
+  const eye = resampleLinear(times, eyeValues, sampleRate);
+  const target = resampleLinear(times, targetValues, sampleRate);
+  if (!eye.values.length || !target.values.length) return NaN;
+  const eyeAmp = amplitudeAtFrequency(eye.times, eye.values, frequencyHz);
+  const targetAmp = amplitudeAtFrequency(target.times, target.values, frequencyHz);
+  return eyeAmp / Math.max(targetAmp, 1e-9);
+}
+
+function computeRmse(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (!n) return NaN;
+  let s = 0;
+  for (let i = 0; i < n; i += 1) {
+    const d = a[i] - b[i];
+    s += d * d;
+  }
+  return Math.sqrt(s / n);
+}
+
+function extractFreeViewing(fvRows, screen) {
+  const groups = groupBy(fvRows, "image_index");
+  const perImage = [];
+  for (const rows of groups.values()) {
+    const clean = rows
+      .filter((r) => Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.tMs))
+      .sort((a, b) => a.tMs - b.tMs);
+    if (clean.length < 8) continue;
+      // FIX BC-MATH-1: adaptive velocity-threshold detector (see
+      // detectEventsEK) instead of the fixed-dispersion I-DT approach —
+      // saccades/fixations come straight out of one call, with kinematics
+      // (amplitude, peak/avg velocity, path length) computed from the same
+      // smoothed velocity used for classification rather than a separate
+      // unsmoothed single-sample-difference speed estimate.
+    const { fixations, saccades: transitions, rows: ordered } = detectEventsEK(
+      clean,
+      "xDeg", "yDeg", "xDeg", "yDeg",
+      "tSec", "tMs",
+      CONFIG.eventDetection
+    );
+    if (fixations.length < 2) continue;
+
+    const centersX = fixations.map((f) => f.cx);
+    const centersY = fixations.map((f) => f.cy);
+    const disp =
+      (((Math.max(...centersX) - Math.min(...centersX)) + (Math.max(...centersY) - Math.min(...centersY))) /
+        Math.max(screen.diag, 1e-9)) *
+      CONFIG.fv.dispersionScale;
+//changed
+        perImage.push({
+      fv_fnum_mean: fixations.length,
+      fv_fdur_mean: _ft_mean(fixations.map((f) => f.durMs)),
+      fv_snum_mean: transitions.length,
+      fv_sdur_mean: _ft_mean(transitions.map((s) => s.durMs)),   // raw ms, no scale
+      fv_samp_mean: _ft_mean(transitions.map((s) => s.ampPx / CONFIG.fv.ampDegPerUnit)),
+      fv_spv_mean:  _ft_mean(transitions.map((s) => s.peakVelocityPxPerSec / CONFIG.fv.peakVelocityScale)),
+      fv_sav_mean:  _ft_mean(transitions.map((s) => s.avgVelocityPxPerSec / CONFIG.fv.avgVelocityScale)),
+      // The issue is pathPx is in DEGREES (since we pass degree arrays to buildTransitions)
+// but scanpathScale = 1/37 makes it larger, not smaller
+// REPLACE with:
+fv_spl_mean:  _ft_sum(transitions.map((s) => s.pathPx)),  // already in degrees, just sum  // per-image total
+      fv_disp_mean: disp,
+    });
+  }
+
+  const out = {};
+  for (const feature of FEATURE_ORDER.filter((name) => name.startsWith("fv_"))) {
+    if(perImage.map((r) => r[feature]).filter(Number.isFinite).length===0){out[feature]=0; continue; }
+    if (feature === 'fv_spl_mean') {
+      // Sum scanpath totals across all images (training data = cumulative across session)
+      out[feature] = _ft_sum(perImage.map((r) => r[feature]).filter(Number.isFinite));
+    } else {
+      out[feature] = _ft_mean(perImage.map((r) => r[feature]).filter(Number.isFinite));
+    }
+  }
+  return out;
+}
+
+function parseBaseFrequency(phaseName) {
+  const match = String(phaseName).match(/([0-9.]+)Hz/i);
+  return match ? Number(match[1]) : NaN;
+}
+
+function extractPursuit(spRows) {
+  const out = {};
+  const phaseGroups = groupBy(spRows, "TaskPhase");
+  const sampleRate = CONFIG.pursuit.sampleRate;
+
+  for (const [phaseName, cfg] of Object.entries(CONFIG.pursuit.phaseConfig)) {
+    const rows = (phaseGroups.get(phaseName) || [])
+      .filter((r) =>
+        Number.isFinite(r.tSec) &&
+        Number.isFinite(r.EyeX) &&
+        Number.isFinite(r.EyeY) &&
+        Number.isFinite(r.TargetX) &&
+        Number.isFinite(r.TargetY)
+      )
+      .map((r) => ({
+        ...r,
+        //changed
+          residualX: r.EyeXDeg - r.TargetXDeg,
+          residualY: r.EyeYDeg - r.TargetYDeg,
+      }))
+      .sort((a, b) => a.tSec - b.tSec);
+
+    if (!rows.length) continue;
+
+    // FIX BC-MATH-1: classify on the RESIDUAL (gaze - target) signal with
+    // the adaptive EK detector — a catch-up saccade is a brief high-
+    // velocity excursion correcting pursuit error, so thresholding the
+    // residual's velocity is the standard way to separate it from the
+    // (fast but expected) pursuit motion itself. Kinematics are still
+    // measured from the raw eye trajectory (EyeXDeg/EyeYDeg), matching
+    // how the original idtResidualFixations + buildTransitions pairing
+    // was already split, just with an adaptive threshold instead of a
+    // fixed dispersion one.
+    const { fixations, saccades: transitions, rows: ordered } = detectEventsEK(
+      rows,
+      "residualX", "residualY", "EyeXDeg", "EyeYDeg",
+      "tSec", "tMs",
+      { lambda: CONFIG.eventDetection.lambda,
+        minDurationMs: CONFIG.eventDetection.minSaccadeDurationMs,
+        minAmplitude: CONFIG.eventDetection.minSaccadeAmplitudeDeg,
+        minThresholdDegPerSec: CONFIG.eventDetection.minThresholdDegPerSec,
+        maxThresholdDegPerSec: CONFIG.eventDetection.maxThresholdDegPerSec }
+    );
+
+    const baseHz = parseBaseFrequency(phaseName);
+    // FIX BC-MATH-7: fixation/saccade duration are now real, directly-
+    // measured onset-to-offset durations from the detector — no more
+    // 50/50 blend with phase-duration/count, and no more empirical
+    // "x0.55" fudge factor on saccade duration. Both were compensating
+    // for the coarse dispersion-based segmentation; the adaptive
+    // velocity detector's run boundaries don't need that correction.
+    const fixMeanDur = _ft_mean(fixations.map((f) => f.durMs));
+    const meanSacDur = _ft_mean(transitions.map((s) => s.durMs));
+
+    // FIX BC-MATH-8: desaccade before computing pursuit quality metrics.
+    // Standard practice in the smooth-pursuit literature (e.g. "Metrics of
+    // two-dimensional smooth pursuit", PMC11801394; "Two-Dimensional
+    // Analysis of Smooth Pursuit...", PMC6753966) is to exclude saccadic
+    // samples before estimating gain/RMSE/SNR, since a handful of large
+    // catch-up-saccade excursions can dominate an RMSE or SNR estimate
+    // computed over the raw signal and bias it independently of how good
+    // the underlying pursuit actually is. We build a pursuit-only (eye,
+    // target, time) series by dropping every sample inside a detected
+    // saccade, then feed that into computeLogSNR / computeRmse /
+    // computeGain instead of the raw arrays.
+    const saccadeMask = new Array(ordered.length).fill(false);
+    for (const s of transitions) {
+      for (let k = s.start; k <= s.end; k += 1) saccadeMask[k] = true;
+    }
+    const pursuitIdx = [];
+    for (let i = 0; i < ordered.length; i += 1) if (!saccadeMask[i]) pursuitIdx.push(i);
+
+    const times   = pursuitIdx.map((i) => ordered[i].tSec);
+    const eyeX    = pursuitIdx.map((i) => ordered[i].EyeXDeg);
+    const eyeY    = pursuitIdx.map((i) => ordered[i].EyeYDeg);
+    const targetX = pursuitIdx.map((i) => ordered[i].TargetXDeg);
+    const targetY = pursuitIdx.map((i) => ordered[i].TargetYDeg);
+
+    if (phaseName === "Horizontal_0.4Hz") {
+      out.HS4_Mean_H_logSNR = computeLogSNR(times, eyeX, baseHz, sampleRate);
+      out.HS4_Mean_H_RMSE   = computeRmse(eyeX, targetX) * CONFIG.pursuit.rmseScale;  // degrees, desaccaded
+      out.HS4_Mean_H_gain   = computeGain(times, eyeX, targetX, baseHz, sampleRate);
+      out.HS4_FixNum = fixations.length;
+      out.HS4_FixDur = fixMeanDur;
+      out.HS4_SacNum = transitions.length;
+      out.HS4_SacDur = meanSacDur;
+      out.HS4_SacAmp = _ft_mean(transitions.map((s) => s.ampPx / cfg.ampDegPerUnit));
+      out.HS4_SacPV  = _ft_mean(transitions.map((s) => s.peakVelocityPxPerSec / cfg.peakVelocityScale));
+      out.HS4_SacAV  = _ft_mean(transitions.map((s) => s.avgVelocityPxPerSec / cfg.avgVelocityScale));
+    } else if (phaseName === "Lissajous_0.2Hz") {
+      out.LS2_Mean_H_logSNR = computeLogSNR(times, eyeX, baseHz, sampleRate);
+      out.LS2_Mean_H_RMSE   = computeRmse(eyeX, targetX) * CONFIG.pursuit.rmseScale;  // degrees, desaccaded
+      out.LS2_Mean_H_gain   = computeGain(times, eyeX, targetX, baseHz, sampleRate);
+      out.LS2_Mean_V_logSNR = computeLogSNR(times, eyeY, baseHz * 2.0, sampleRate);
+      out.LS2_Mean_V_RMSE   = computeRmse(eyeY, targetY) * CONFIG.pursuit.rmseScale;  // degrees, desaccaded
+      out.LS2_Mean_V_gain   = computeGain(times, eyeY, targetY, baseHz * 2.0, sampleRate);
+      out.LS2_FixNum = fixations.length;
+      out.LS2_FixDur = fixMeanDur;
+      out.LS2_SacNum = transitions.length;
+      out.LS2_SacDur = meanSacDur;
+      out.LS2_SacAmp = _ft_mean(transitions.map((s) => s.ampPx / cfg.ampDegPerUnit));
+      out.LS2_SacPV  = _ft_mean(transitions.map((s) => s.peakVelocityPxPerSec / cfg.peakVelocityScale));
+      out.LS2_SacAV  = _ft_mean(transitions.map((s) => s.avgVelocityPxPerSec / cfg.avgVelocityScale));
+    } else if (phaseName === "Lissajous_0.4Hz") {
+      out.LS4_Mean_H_logSNR = computeLogSNR(times, eyeX, baseHz, sampleRate);
+      out.LS4_Mean_H_RMSE   = computeRmse(eyeX, targetX) * CONFIG.pursuit.rmseScale;  // degrees, desaccaded
+      out.LS4_Mean_H_gain   = computeGain(times, eyeX, targetX, baseHz, sampleRate);
+      out.LS4_Mean_V_logSNR = computeLogSNR(times, eyeY, baseHz * 2.0, sampleRate);
+      out.LS4_Mean_V_RMSE   = computeRmse(eyeY, targetY) * CONFIG.pursuit.rmseScale;  // degrees, desaccaded
+      out.LS4_Mean_V_gain   = computeGain(times, eyeY, targetY, baseHz * 2.0, sampleRate);
+      out.LS4_FixNum = fixations.length;
+      out.LS4_FixDur = fixMeanDur;
+      out.LS4_SacNum = transitions.length;
+      out.LS4_SacDur = meanSacDur;
+      out.LS4_SacAmp = _ft_mean(transitions.map((s) => s.ampPx / cfg.ampDegPerUnit));
+      out.LS4_SacPV  = _ft_mean(transitions.map((s) => s.peakVelocityPxPerSec / cfg.peakVelocityScale));
+      out.LS4_SacAV  = _ft_mean(transitions.map((s) => s.avgVelocityPxPerSec / cfg.avgVelocityScale));
+    }
+  }
+  return out;
+}
+
+function extractFixationCondition(szRows, phaseName, dispersionThresholdDeg, ampDegPerUnit, scanpathScale) {
+  const phases = Array.isArray(phaseName) ? phaseName : [phaseName];
+  const rows = szRows
+    .filter((r) => phases.includes(r.Phase))
+    .filter((r) => Number.isFinite(r.tMs) && Number.isFinite(r.Gaze_X) && Number.isFinite(r.Gaze_Y))
+    .sort((a, b) => a.tMs - b.tMs);
+
+  // FIX BC-MATH-1: adaptive velocity-threshold detector, see detectEventsEK.
+  const { fixations, saccades: transitions } = detectEventsEK(
+    rows, 'Gaze_XDeg', 'Gaze_YDeg', 'Gaze_XDeg', 'Gaze_YDeg', 'tSec', 'tMs',
+    CONFIG.eventDetection
+  );
+
+  return {
+    fixNum: fixations.length,
+    fixDur: _ft_mean(fixations.map((f) => f.durMs)),
+    sacNum: transitions.length,
+    sacAmp: _ft_mean(transitions.map((s) => s.ampPx / ampDegPerUnit)),
+    scanpath: _ft_sum(transitions.map((s) => s.pathPx / scanpathScale)),
+  };
+}
+
+function splitAntisaccadeTrials(szRows, gapMs) {
+  const ant = szRows
+    .filter((r) => r.Phase === "ANTISACCADE")
+    .filter((r) => Number.isFinite(r.tMs) && Number.isFinite(r.Gaze_XDeg) && Number.isFinite(r.Target_XDeg))
+    .sort((a, b) => a.tMs - b.tMs);
+
+  if (!ant.length) return [];
+  const trials = [];
+  let start = 0;
+  for (let i = 1; i < ant.length; i += 1) {
+    //changed
+        if ((ant[i].tMs - ant[i - 1].tMs) > gapMs) {
+      trials.push(ant.slice(start, i));
+      start = i;
+    }
+  }
+  trials.push(ant.slice(start));
+  return trials;
+}
+
+function estimateCenterX(szRows, screen) {
+  const stableTargets = szRows
+    .filter((r) => r.Phase !== "ANTISACCADE")
+    .map((r) => r.Target_XDeg)
+    .filter(Number.isFinite);
+  if (stableTargets.length) return _ft_median(stableTargets);
+  return screen.width / 2.0;
+}
+
+function findQualifyingSaccadeOnset(trial, vx, velocityThreshold, minSamples, minAmplitudeDeg) {
+  let i = 1;
+  while (i < vx.length) {
+    if (Math.abs(vx[i]) >= velocityThreshold) {
+      const dir = Math.sign(vx[i]);
+      let j = i;
+      while (j + 1 < vx.length && Math.abs(vx[j + 1]) >= velocityThreshold && Math.sign(vx[j + 1]) === dir) {
+        j += 1;
+      }
+      const nSamples = j - i + 1;
+      const amp = Math.abs(trial[j].Gaze_XDeg - trial[i - 1].Gaze_XDeg);
+      if (nSamples >= minSamples && amp >= minAmplitudeDeg) {
+        return { onsetIdx: i, dir };
+      }
+      i = j + 1;
+    } else {
+      i += 1;
+    }
+  }
+  return null;
+}
+
+function extractAntisaccade(szRows, screen) {
+  const centerX = estimateCenterX(szRows, screen);
+  const trials = splitAntisaccadeTrials(szRows, CONFIG.antisaccade.trialGapMs);
+  const velocityThreshold = CONFIG.antisaccade.velocityThresholdDegPerSec;
+  const landingToleranceDeg = CONFIG.antisaccade.landingToleranceDeg;
+  const minAmplitudeDeg = CONFIG.antisaccade.minSaccadeAmplitudeDeg;
+  const anticipatoryMs = CONFIG.antisaccade.anticipatoryLatencyMs;
+
+  const initialErrors = [];
+  const correctionErrors = [];
+  const latencies = [];
+  const accuracies = [];
+
+  for (const trial of trials) {
+    if (trial.length < 3) continue;
+    const targetX = trial[0].Target_XDeg;
+   const correctX = 2.0 * centerX - targetX; 
+    const correctDir = Math.sign(correctX - centerX) || 1;
+
+    // Smoothed velocity: short central-difference window (same style as
+    // ekAxisVelocity) instead of a raw single-sample backward difference.
+    const vx = new Array(trial.length).fill(0);
+    for (let i = 0; i < trial.length; i += 1) {
+      const i0 = Math.max(0, i - 2);
+      const i1 = Math.min(trial.length - 1, i + 2);
+      const dt = trial[i1].tSec - trial[i0].tSec;
+      if (dt > 1e-6) vx[i] = (trial[i1].Gaze_XDeg - trial[i0].Gaze_XDeg) / dt;
+    }
+
+    // Minimum sustained-duration criterion, translated from ms into a
+    // sample count using this trial's own median inter-sample interval
+    // (this session's effective rate varies session-to-session — see the
+    // sampling-rate audit — so a fixed sample count would be wrong at a
+    // different rate).
+    const dts = [];
+    for (let i = 1; i < trial.length; i += 1) dts.push((trial[i].tSec - trial[i - 1].tSec) * 1000);
+    const medDt = _ft_median(dts) || 33;
+    const minSamples = Math.max(2, Math.round(CONFIG.antisaccade.minSaccadeDurationMs / medDt));
+
+    const onset = findQualifyingSaccadeOnset(trial, vx, velocityThreshold, minSamples, minAmplitudeDeg);
+
+    const initialError = onset ? onset.dir !== correctDir : false;
+    initialErrors.push(initialError);
+
+    let corrected = false;
+    for (const row of trial) {
+      if (Math.abs(row.Gaze_XDeg - correctX) <= landingToleranceDeg) {
+        corrected = true;
+        break;
+      }
+    }
+
+    if (initialError) {
+      correctionErrors.push(!corrected);
+    }
+
+    if (!initialError && onset) {
+      const latencyMs = trial[onset.onsetIdx].tMs - trial[0].tMs;
+      if (latencyMs >= anticipatoryMs) {
+        latencies.push(latencyMs);
+      }
+      // else: anticipatory — excluded from the latency estimate, but the
+      // trial's error/accuracy classification above already stands.
+    }
+
+    const finalCorrect = Math.abs(trial[trial.length - 1].Gaze_XDeg - correctX) <= landingToleranceDeg;
+    accuracies.push(corrected || finalCorrect);
+  }
+
+  return {
+    antisaccade_error_rate: _ft_mean(initialErrors.map((v) => (v ? 1 : 0))),
+    antisaccade_correction_error_rate: correctionErrors.length
+      ? _ft_mean(correctionErrors.map((v) => (v ? 1 : 0)))
+      : 0,
+    antisaccade_latency: _ft_mean(latencies),
+    antisaccade_accuracy: _ft_mean(accuracies.map((v) => (v ? 1 : 0))),
+  };
+}
+
+function roundFeature(name, value) {
+  const threeDecimal =
+    name.includes("logSNR") ||
+    name.includes("gain") ||
+    name.includes("disp") ||
+    name.includes("error_rate") ||
+    name.includes("accuracy");
+  const digits = threeDecimal ? 3 : 2;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function finalizeFeature(name, rawValue) {
+  let value = rawValue;
+  let lowConfidence = false;
+  const bound = BOUNDS[name] || {};
+  if (!Number.isFinite(value)) {
+    lowConfidence = true;
+    if (NA_FALLBACK_MIDPOINT.has(name) && Number.isFinite(bound.lower) && Number.isFinite(bound.upper)) {
+      value = (bound.lower + bound.upper) / 2;
+    } else {
+      value = Number.isFinite(bound.lower) ? bound.lower : 0;
+    }
+  }
+  if (Number.isFinite(bound.lower)) value = Math.max(bound.lower, value);
+  if (Number.isFinite(bound.upper)) value = Math.min(bound.upper, value);
+  return { value: roundFeature(name, value), lowConfidence };
+}
+
+function cloneRows(rows) {
+  return rows.map((row) => ({ ...row }));
+}
+// ════════════════════════════════════════════════════════════════
+// Orchestrator + CSV parsing for offline (non-live-session) replay.
+// Mirrors the live app's own feature-computation sequence exactly
+// (see runAIClassification in battery-controller.js) — the only
+// differences are that pxPerDeg and screen width/height are explicit
+// inputs here instead of a live session's calibration/window globals.
+// ════════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  const lines = text.split(/\r\n|\n|\r/).filter((l) => l.trim().length > 0);
+  if (!lines.length) return [];
+  const headers = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+  const rows = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const parts = lines[i].split(',');
+    const row = {};
+    headers.forEach((h, idx) => {
+      let v = parts[idx];
+      if (v === undefined) { row[h] = undefined; return; }
+      v = v.trim().replace(/^"|"$/g, '');
+      const num = Number(v);
+      row[h] = v !== '' && Number.isFinite(num) ? num : v;
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function computeAllFeatures(fvRaw, spRaw, szRaw, opts) {
+  const ppd = opts.pxPerDeg;
+  const fvRows2 = normalizeFv(fvRaw, ppd);
+  const spRows2 = normalizeSpem(spRaw, ppd);
+  const szRows2 = normalizeSz(szRaw, ppd);
+  const screen = estimateScreenGeometry(opts.screenWidthPx, opts.screenHeightPx, ppd);
+
+  const fm = {};
+  Object.assign(fm, extractFreeViewing(fvRows2, screen));
+  Object.assign(fm, extractPursuit(spRows2));
+
+  const fixS = extractFixationCondition(
+    szRows2, CONFIG.fixationSingle.phase, CONFIG.fixationSingle.dispersionThresholdDeg,
+    CONFIG.fixationSingle.ampDegPerUnit, CONFIG.fixationSingle.scanpathScale
+  );
+  fm.fix_fs_fn = fixS.fixNum; fm.fix_fs_fd = fixS.fixDur; fm.fix_fs_sn = fixS.sacNum;
+  fm.fix_fs_sa = fixS.sacAmp; fm.fix_fs_spl = fixS.scanpath;
+
+  const fixM = extractFixationCondition(
+    szRows2, CONFIG.fixationDistractor.phase, CONFIG.fixationDistractor.dispersionThresholdDeg,
+    CONFIG.fixationDistractor.ampDegPerUnit, CONFIG.fixationDistractor.scanpathScale
+  );
+  fm.fix_fd_fn = fixM.fixNum; fm.fix_fd_fd = fixM.fixDur; fm.fix_fd_sn = fixM.sacNum;
+  fm.fix_fd_sa = fixM.sacAmp; fm.fix_fd_spl = fixM.scanpath;
+
+  Object.assign(fm, extractAntisaccade(szRows2, screen));
+
+  const features = {};
+  const dataQuality = {};
+  const rawBeforeBounds = {};
+  for (const name of FEATURE_ORDER) {
+    rawBeforeBounds[name] = fm[name];
+    const r = finalizeFeature(name, fm[name]);
+    features[name] = r.value;
+    if (r.lowConfidence) dataQuality[name] = 'insufficient_valid_data';
+  }
+  return { features, dataQuality, rawBeforeBounds, screen };
+}
+
+</script>
+<script>
+(function () {
+  const FEATURE_DOMAINS = [
+    { title: 'FREE VIEWING', prefix: 'fv_' },
+    { title: 'SPEM — HORIZONTAL 0.4Hz', prefix: 'HS4_' },
+    { title: 'SPEM — LISSAJOUS 0.2Hz', prefix: 'LS2_' },
+    { title: 'SPEM — LISSAJOUS 0.4Hz', prefix: 'LS4_' },
+    { title: 'FIXATION STABILITY — NO DISTRACTOR', prefix: 'fix_fs_' },
+    { title: 'FIXATION STABILITY — DISTRACTOR', prefix: 'fix_fd_' },
+    { title: 'ANTISACCADE', prefix: 'antisaccade_' },
+  ];
+
+  const state = { fv: null, sp: null, sz: null };
+
+  function wireDrop(dropId, fileId, labelId, rowsId, key) {
+    const drop = document.getElementById(dropId);
+    const input = document.getElementById(fileId);
+    const label = document.getElementById(labelId);
+    const rowsEl = document.getElementById(rowsId);
+    input.addEventListener('change', () => {
+      const f = input.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const rows = parseCSV(e.target.result);
+          state[key] = rows;
+          drop.classList.add('filled');
+          label.textContent = f.name;
+          rowsEl.textContent = rows.length + ' rows';
+          updateComputeButton();
+        } catch (err) {
+          showError('Failed to parse ' + f.name + ': ' + err.message);
+        }
+      };
+      reader.readAsText(f);
+    });
+  }
+  wireDrop('drop-fv', 'file-fv', 'label-fv', 'rows-fv', 'fv');
+  wireDrop('drop-sp', 'file-sp', 'label-sp', 'rows-sp', 'sp');
+  wireDrop('drop-sz', 'file-sz', 'label-sz', 'rows-sz', 'sz');
+
+  function updateComputeButton() {
+    const btn = document.getElementById('compute-btn');
+    const ready = state.fv && state.sp && state.sz;
+    btn.disabled = !ready;
+    btn.textContent = ready ? 'Compute 59 features' : 'Load all 3 CSVs to compute features';
+  }
+
+  function showError(msg) {
+    const box = document.getElementById('error-box');
+    box.textContent = msg;
+    box.style.display = 'block';
+  }
+  function hideError() {
+    document.getElementById('error-box').style.display = 'none';
+  }
+
+  document.getElementById('compute-btn').addEventListener('click', () => {
+    hideError();
+    try {
+      const opts = {
+        pxPerDeg: Number(document.getElementById('px-per-deg').value) || 37,
+        screenWidthPx: Number(document.getElementById('screen-w').value) || 1920,
+        screenHeightPx: Number(document.getElementById('screen-h').value) || 1080,
+      };
+      const result = computeAllFeatures(state.fv, state.sp, state.sz, opts);
+      renderResults(result);
+    } catch (err) {
+      showError('Computation failed: ' + err.message + '\n\n' + (err.stack || ''));
+    }
+  });
+
+  function statusFor(name, value, dataQuality) {
+    if (dataQuality[name]) return 'na';
+    const b = BOUNDS[name];
+    if (!b) return 'ok';
+    if (value <= b.lower + 1e-9 || value >= b.upper - 1e-9) return 'bound';
+    return 'ok';
+  }
+
+  function renderResults(result) {
+    const { features, dataQuality } = result;
+    const container = document.getElementById('domain-tables');
+    container.innerHTML = '';
+
+    for (const domain of FEATURE_DOMAINS) {
+      const names = FEATURE_ORDER.filter((n) => n.startsWith(domain.prefix));
+      if (!names.length) continue;
+      const group = document.createElement('div');
+      group.className = 'domain-group';
+      const title = document.createElement('div');
+      title.className = 'domain-title';
+      title.textContent = domain.title;
+      group.appendChild(title);
+      const table = document.createElement('table');
+      for (const name of names) {
+        const val = features[name];
+        const b = BOUNDS[name] || {};
+        const status = statusFor(name, val, dataQuality);
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td class="fname">' + name + '</td>' +
+          '<td class="fval" style="color:' + (status === 'ok' ? 'var(--text)' : status === 'bound' ? 'var(--warn)' : 'var(--bad)') + '">' + val + '</td>' +
+          '<td class="frange">' + (b.lower !== undefined ? b.lower + '–' + b.upper : '') + '</td>' +
+          '<td class="fstatus"><span class="badge ' + status + '">' + (status === 'ok' ? 'ok' : status === 'bound' ? 'at bound' : 'no data') + '</span></td>';
+        table.appendChild(tr);
+      }
+      group.appendChild(table);
+      container.appendChild(group);
+    }
+
+    const jsonOut = document.getElementById('json-output');
+    jsonOut.textContent = JSON.stringify(features, null, 2);
+    document.getElementById('results-section').style.display = 'block';
+
+    document.getElementById('copy-json').onclick = () => {
+      navigator.clipboard.writeText(JSON.stringify(features, null, 2));
+    };
+    document.getElementById('download-json').onclick = () => {
+      const blob = new Blob([JSON.stringify(features, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'features.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+  }
+})();
+</script>
+</body>
+</html>
