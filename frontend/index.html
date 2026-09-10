@@ -1396,7 +1396,7 @@ window.doLogin = async function() {
   </div>
 
   <script>
-  /* ── Face Alignment Logic (MediaPipe) ──────────────────────────────────── */
+  /* ── Native face-alignment preview (EyeTracker owns MediaPipe) ─────────── */
   (function() {
     const CAM_CFG = {
       ALIGN_THRESHOLD: 0.60,
@@ -1423,7 +1423,6 @@ window.doLogin = async function() {
 
     let goodFrameCount = 0;
     let mpCamera = null;
-    let faceDetector = null;
 
     function resizeCanvases() {
       const rect = document.getElementById('cam-stage').getBoundingClientRect();
@@ -1659,6 +1658,10 @@ window.doLogin = async function() {
       drawSilhouette('neutral');
       setStatus('good', 'Camera active — preview ready');
       tipsEl.innerHTML = '<strong>Camera preview ready.</strong> Continue to calibration when you are seated and well-lit.';
+      alignScoreEl.textContent = 'Ready';
+      lightScoreEl.textContent = 'Check lighting';
+      alignMeterEl.style.width = '100%';
+      lightMeterEl.style.width = '70%';
       proceedBtn.disabled = false;
     }
 
