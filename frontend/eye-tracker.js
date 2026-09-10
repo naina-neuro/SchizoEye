@@ -98,8 +98,33 @@ const EyeTracker = (() => {
     { name: '640x480@120', video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:120} } },
     { name: '320x240@120', video: { width:{ideal:320}, height:{ideal:240}, frameRate:{ideal:120} } },
     { name: '640x480@60',  video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:60}  } },
+    { name: '640x480@30',  video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30}  } },
+    { name: '320x240@30',  video: { width:{ideal:320}, height:{ideal:240}, frameRate:{ideal:30}  } },
     { name: 'default',     video: { facingMode:'user' } },
   ];
+
+  function tdiag(msg, extra) {
+    if (typeof window.TestDiag === 'function') { window.TestDiag(msg, extra); return; }
+    const ts = new Date().toISOString().split('T')[1].replace('Z', '');
+    if (extra !== undefined) console.log(`[TestDiag ${ts}] ${msg}`, extra);
+    else console.log(`[TestDiag ${ts}] ${msg}`);
+  }
+
+  function waitMs(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  function streamIsLive(stream) {
+    return !!(stream && typeof stream.getVideoTracks === 'function' &&
+      stream.getVideoTracks().some(t => t.readyState === 'live'));
+  }
+
+  function attachWebglGuard(canvas, label) {
+    if (!canvas || canvas._testdiagWebglGuard) return;
+    canvas._testdiagWebglGuard = true;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('[TestDiag] WebGL context lost on ' + label + ', attempting restore');
+    }, false);
+  }
 
   // ── Iris & eye-corner landmark indices ───────────────────────
   const IRIS_IDX = { L_CENTER:468, L_RING:[469,470,471,472], R_CENTER:473, R_RING:[474,475,476,477] };
@@ -411,7 +436,9 @@ const EyeTracker = (() => {
           extractFeatures(kp, tmp);
           return { features: Array.from(tmp), quality };
         }
-      } catch(_) {}
+      } catch (err) {
+        tdiag('detector.estimateFaces calibration frame failed', { name: err.name, message: err.message, attempt: attempt + 1 });
+      }
       await sleep(40);
     }
     return null;
@@ -419,6 +446,7 @@ const EyeTracker = (() => {
 
   // ── Run full calibration ──────────────────────────────────────
   async function runCalibration() {
+    tdiag('calibration grid starting', { canvasWidth: window.innerWidth, canvasHeight: window.innerHeight, points: calibPoints.length });
     calibData     = [];
     isCalibrating = true;
     _calibrated   = false;
@@ -614,7 +642,7 @@ const EyeTracker = (() => {
       })
       .catch(_err => {
         _detectorBusy = false;
-        // Don't log every frame — would flood console at high FPS
+        if (_totalFrames <= 3 || _totalFrames % 120 === 0) tdiag('detector.estimateFaces frame rejected', { name: _err.name, message: _err.message, frame: _totalFrames });
       });
   }
 
@@ -702,10 +730,17 @@ const EyeTracker = (() => {
 
   // FIX FPS-11: multi-constraint camera fallback. Tries each set until one works.
   async function selectAndInitializeCamera() {
+    const handoffStream = window._handoffMediaStream;
+    if (streamIsLive(handoffStream)) {
+      tdiag('reusing live preview MediaStream for EyeTracker', { tracks: handoffStream.getTracks().map(track => ({ kind: track.kind, state: track.readyState })) });
+      window._handoffMediaStream = null;
+      return handoffStream;
+    }
+    tdiag('no reusable preview stream; enumerating cameras');
     const devices = await navigator.mediaDevices.enumerateDevices();
     const videoDevices = devices.filter(d => d.kind === 'videoinput');
 
-    console.log(`[EyeTracker v12] Found ${videoDevices.length} video device(s):`);
+    tdiag(`found ${videoDevices.length} video device(s)`);
     videoDevices.forEach((d, i) => console.log(`  [${i}] ${d.label || 'Unknown'}`));
 
     let selectedDeviceId = null;
@@ -739,6 +774,7 @@ const EyeTracker = (() => {
         console.log(`[EyeTracker v12] ✓ Camera opened with constraint set: ${cs.name}`);
         break;
       } catch (err) {
+        tdiag(`camera constraint "${cs.name}" failed; trying fallback`, { name: err.name, message: err.message });
         console.warn(`[EyeTracker v12] Constraint set "${cs.name}" failed: ${err.name}`);
       }
     }
@@ -787,11 +823,13 @@ const EyeTracker = (() => {
     if (_startPromise) return _startPromise;
     _started = true;
     _startPromise = (async () => {
+    tdiag('EyeTracker startup begin');
 
     if (headCalScreen) headCalScreen.style.display='none';
 
     try {
       const stream = await selectAndInitializeCamera();
+      tdiag('EyeTracker camera acquired', { liveTracks: stream.getTracks().filter(track => track.readyState === 'live').length });
 
       // FIX FPS-17: video element OFFSCREEN-VISIBLE (not 1×1 invisible).
       // Chromium throttles requestVideoFrameCallback for 1×1 invisible video
@@ -804,11 +842,17 @@ const EyeTracker = (() => {
       videoEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:320px;height:240px;pointer-events:none;z-index:-1;';
       videoEl.srcObject = stream;
       document.body.appendChild(videoEl);
-      await new Promise(res => videoEl.addEventListener('loadeddata', res, {once:true}));
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('EyeTracker video did not become ready within 10 seconds')), 10000);
+        videoEl.addEventListener('loadeddata', () => { clearTimeout(timer); resolve(); }, {once:true});
+        videoEl.addEventListener('error', () => { clearTimeout(timer); reject(new Error('EyeTracker video element failed to load')); }, {once:true});
+      });
+      tdiag('EyeTracker video ready', { width: videoEl.videoWidth, height: videoEl.videoHeight });
 
       // TF backend — WebGL for GPU inference
       await tf.setBackend('webgl');
       await tf.ready();
+      tdiag('TensorFlow WebGL backend ready');
 
       // FaceMesh detector with iris refinement (required for 12-D features)
       detector = await faceLandmarksDetection.createDetector(
@@ -820,9 +864,11 @@ const EyeTracker = (() => {
           maxFaces        : 1,
         }
       );
+      tdiag('FaceLandmarksDetector initialized');
 
       // Warm-up pass
       await detector.estimateFaces(videoEl, {flipHorizontal:false});
+      tdiag('FaceLandmarksDetector warm-up completed');
 
       _renderX = W()/2; _renderY = H()/2;
 
@@ -833,7 +879,17 @@ const EyeTracker = (() => {
       }
 
     } catch(err) {
+      tdiag('EyeTracker startup failed', { name: err.name, message: err.message });
       console.error('[EyeTracker v12] Init error:', err);
+      stopTrackingLoop();
+      if (detector && typeof detector.dispose === 'function') { try { detector.dispose(); } catch (_) {} }
+      detector = null;
+      if (videoEl) { try { videoEl.pause(); } catch (_) {} videoEl.srcObject = null; videoEl.remove(); videoEl = null; }
+      if (videoStream && !streamIsLive(window._handoffMediaStream)) videoStream.getTracks().forEach(track => track.stop());
+      videoStream = null;
+      window.Module = undefined;
+      _started = false;
+      _startPromise = null;
       alert('Eye tracker failed to initialise: ' + err.message);
       throw err;
     }

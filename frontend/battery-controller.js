@@ -208,6 +208,7 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
 
   // ── Start Battery ──────────────────────────────────────────────────────────
   function start() {
+    if (typeof window.TestDiag === 'function') window.TestDiag('BatteryController.start begin');
     subjectId = $('global-subject-id').value.trim() || 'Subject_01';
     patientName = $('global-patient-name').value.trim();
     patientAge = $('global-patient-age').value.trim();
@@ -231,13 +232,18 @@ pxPerDeg = pxPerInch * inchesPerDeg;
 console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${screenDiagonalInches}″, ${screenDiagPx.toFixed(0)}px)`);
     // Automatically trigger Fullscreen mode for the whole test
     if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch(err => console.warn("Fullscreen error", err));
+        document.documentElement.requestFullscreen().catch(err => {
+          if (typeof window.TestDiag === 'function') window.TestDiag('Fullscreen request rejected, continuing in windowed mode', err);
+          console.warn('[TestDiag] Fullscreen request rejected, continuing in windowed mode:', err);
+        });
     }
 
     $('battery-intro').style.display = 'none';
 
     // Begin Camera Check
     $('camera-check-screen').style.display = 'flex';
+    $('camera-check-screen').classList.remove('hidden');
+    if (typeof window.TestDiag === 'function') window.TestDiag('camera-check-screen visible; requesting preview camera');
 
     // FIX BC-7 (CRITICAL): eye-tracker.js v9.0 does NOT use WebGazer — it creates its
     // own hidden <video> element appended to <body>. The old code looked for
@@ -252,6 +258,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         const alignStream = await navigator.mediaDevices.getUserMedia({
           video: { width:{ideal:640}, height:{ideal:480}, facingMode:'user' }
         });
+        if (typeof window.TestDiag === 'function') window.TestDiag('preview getUserMedia succeeded', { tracks: alignStream.getTracks().map(track => ({ kind: track.kind, state: track.readyState })) });
         const alignVid = document.createElement('video');
         alignVid.setAttribute('autoplay','');
         alignVid.setAttribute('playsinline','');
@@ -273,6 +280,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
           alignVid.remove();
         };
       } catch(e) {
+        if (typeof window.TestDiag === 'function') window.TestDiag('preview getUserMedia failed', { name: e.name, message: e.message });
         console.warn('[BatteryController] Alignment camera stream failed:', e);
         if (typeof window.reportClientError === 'function') {
           window.reportClientError('camera permission/preview', e, 'navigator.mediaDevices.getUserMedia failed');
@@ -294,6 +302,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
 
   async function startVideoCal() {
     try {
+      if (typeof window.TestDiag === 'function') window.TestDiag('startVideoCal: stopping preview');
       if (typeof window._stopCameraPreview === 'function') await window._stopCameraPreview();
       $('camera-check-screen').style.display = 'none';
       if (typeof window._stopAlignStream === 'function') {
@@ -301,6 +310,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         window._stopAlignStream = null;
       }
       $('video-cal-screen').style.display = 'flex';
+      if (typeof window.TestDiag === 'function') window.TestDiag('video-cal-screen visible');
     } catch (err) {
       if (typeof window.reportClientError === 'function') window.reportClientError('camera preview teardown', err);
       $('camera-check-screen').style.display = 'flex';
@@ -308,11 +318,31 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
 
   async function startClickCal() {
+    if (typeof window.TestDiag === 'function') window.TestDiag('startClickCal begin');
     $('video-cal-screen').style.display = 'none';
+    ['battery-container', 'calibration-screen', 'cal-screen', 'cal-dot'].forEach(id => {
+      const element = $(id);
+      if (element) {
+        element.classList.remove('hidden');
+        if (id === 'cal-screen') element.style.display = 'flex';
+        if (id === 'cal-dot') element.style.display = 'none';
+      }
+    });
+    ['camera-check-screen', 'video-cal-screen'].forEach(id => {
+      const element = $(id);
+      if (element) element.classList.remove('active', 'visible');
+    });
+    if (typeof window.TestDiag === 'function') window.TestDiag('calibration surfaces reset', {
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      calScreen: $('cal-screen') ? { width: $('cal-screen').offsetWidth, height: $('cal-screen').offsetHeight } : null
+    });
 
     // Request fullscreen while this handler still has the user's gesture.
     if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(err => console.warn("Fullscreen error", err));
+      document.documentElement.requestFullscreen().catch(err => {
+        if (typeof window.TestDiag === 'function') window.TestDiag('Fullscreen request rejected during calibration', err);
+        console.warn('[TestDiag] Fullscreen request rejected, continuing in windowed mode:', err);
+      });
     }
 
     // The camera-check FaceDetection runtime must be fully closed before
@@ -321,17 +351,21 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       if (typeof window._stopCameraPreview === 'function') {
         await window._stopCameraPreview();
       }
+      if (typeof window.TestDiag === 'function') window.TestDiag('preview teardown complete; starting EyeTracker');
       if (typeof window._startEyeTrackerNow === 'function') {
         await window._startEyeTrackerNow();
+        if (typeof window.TestDiag === 'function') window.TestDiag('window._startEyeTrackerNow completed');
       }
 
       // Always use the alignment-aware path so users complete alignment before the grid starts.
       if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.recalibrate === 'function') {
         await EyeTracker.recalibrate();
+        if (typeof window.TestDiag === 'function') window.TestDiag('calibration setup visible; waiting for calibration start');
       } else if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.startDirectCalibration === 'function') {
         await EyeTracker.startDirectCalibration();
       }
     } catch (err) {
+      if (typeof window.TestDiag === 'function') window.TestDiag('EyeTracker startup/calibration failed', err);
       console.error('[BatteryController] Camera handoff failed:', err);
       if (typeof window.reportClientError === 'function') window.reportClientError('EyeTracker startup/calibration', err, `API base: ${API_BASE}`);
       $('video-cal-screen').style.display = 'flex';
@@ -748,6 +782,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
 
   function startFreeViewing() {
+    if (typeof window.TestDiag === 'function') window.TestDiag('Task 3 Free Viewing started');
     $('fv-experiment-screen').style.display = 'flex';
     $('gaze-cursor').style.display = 'none';
     fvCurrentImageIndex = 0;
@@ -756,7 +791,6 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
 
   function showNextFVImage() {
-    while (fvCurrentImageIndex < FV_NUM_IMAGES && (!fvImages[fvCurrentImageIndex] || !fvImages[fvCurrentImageIndex].loaded)) fvCurrentImageIndex++;
     if (fvCurrentImageIndex >= FV_NUM_IMAGES) { finishFreeViewing(); return; }
 
     const crosshair = $('crosshair'), stimulusImage = $('stimulus-image');
@@ -772,7 +806,15 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       crosshair.style.display = 'none'; stimulusImage.style.display = 'block';
       expProgress.style.display = 'block';
       expTimer.style.display = 'block';
-      stimulusImage.src = fvImages[fvCurrentImageIndex].src;
+      const image = fvImages[fvCurrentImageIndex];
+      if (image && image.loaded) {
+        stimulusImage.style.background = '';
+        stimulusImage.src = image.src;
+      } else {
+        stimulusImage.removeAttribute('src');
+        stimulusImage.style.background = 'radial-gradient(circle, #ff2244 0 10px, transparent 11px)';
+        if (typeof window.TestDiag === 'function') window.TestDiag('Free Viewing image missing; using fallback target', { index: fvCurrentImageIndex + 1 });
+      }
       RawGazeCollector.startRecording();
       let timeLeft = FV_IMAGE_DISPLAY_DURATION / 1000;
       expTimer.textContent = timeLeft.toFixed(1) + 's';
@@ -781,7 +823,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       }, 100);
       fvExperimentTimeout = setTimeout(() => {
         clearInterval(fvTimerInterval); RawGazeCollector.stopRecording();
-        RawGazeCollector.saveImageData(fvImages[fvCurrentImageIndex].name);
+        RawGazeCollector.saveImageData((image && image.name) || `${fvCurrentImageIndex + 1}.jpg`);
         fvCurrentImageIndex++; showNextFVImage();
       }, FV_IMAGE_DISPLAY_DURATION);
     }, FV_CROSSHAIR_DURATION);
