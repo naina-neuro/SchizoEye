@@ -135,6 +135,7 @@
     body.headless-mode #report-modal,
     body.headless-mode #return-to-dashboard-wrap { display: none !important; }
     body.headless-mode #battery-intro { display: block !important; }
+    body.headless-mode #battery-intro.protocol-started { display: none !important; }
     body.headless-mode #battery-back-btn { display: none !important; }
   </style>
 </head>
@@ -201,10 +202,20 @@
       const text = _clientDiagnostics.join('\n\n') || 'No client errors recorded.';
       try { await navigator.clipboard.writeText(text); } catch (e) { window.prompt('Copy diagnostics:', text); }
     };
+    window.TestDiag = function (msg, extra) {
+      const ts = new Date().toISOString().split('T')[1].replace('Z', '');
+      if (extra !== undefined) console.log(`[TestDiag ${ts}] ${msg}`, extra);
+      else console.log(`[TestDiag ${ts}] ${msg}`);
+    };
     window.addEventListener('error', event => {
       window.reportClientError('window error', event.error || event.message, `${event.filename || ''}:${event.lineno || ''}`);
     });
-    window.addEventListener('unhandledrejection', event => window.reportClientError('unhandled promise', event.reason));
+    window.addEventListener('unhandledrejection', event => {
+      const reason = event.reason;
+      const msg = reason && reason.message ? reason.message : String(reason);
+      if (typeof window.TestDiag === 'function') window.TestDiag('unhandled promise rejection: ' + msg, reason);
+      window.reportClientError('unhandled promise', event.reason);
+    });
 
     // Check if user was already logged in (for new tabs)
    function initializeUserFromStorage() {
@@ -1283,9 +1294,9 @@ window.doLogin = async function() {
   <style>
     /* ── Face Alignment Screen ──────────────────────────────────────────────── */
     #camera-check-screen {
-      position: fixed; inset: 0; z-index: 900;
+      position: fixed; inset: 0; z-index: 2500;
       background: #0d0f14;
-      display: flex; flex-direction: column;
+      display: none; flex-direction: column;
       align-items: center; justify-content: flex-start;
       padding: 28px 16px 36px;
       gap: 18px;
@@ -1463,6 +1474,23 @@ window.doLogin = async function() {
 
     const octx = overlayCanvas.getContext('2d');
     const dctx = debugCanvas.getContext('2d');
+    function attachWebglGuard(canvas, label) {
+      if (!canvas || canvas._testdiagWebglGuard) return;
+      canvas._testdiagWebglGuard = true;
+      canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        console.warn('[TestDiag] WebGL context lost on ' + label + ', attempting restore');
+      }, false);
+      canvas.addEventListener('webglcontextrestored', () => {
+        console.log('[TestDiag] WebGL context restored on ' + label);
+      }, false);
+    }
+    attachWebglGuard(overlayCanvas, 'cam-overlay-canvas');
+    attachWebglGuard(debugCanvas, 'cam-debug-canvas');
+    const alignCanvas = document.getElementById('alignCanvas');
+    if (alignCanvas) attachWebglGuard(alignCanvas, 'alignCanvas');
+    const szStage = document.getElementById('sz-stage');
+    if (szStage) attachWebglGuard(szStage, 'sz-stage');
 
     let goodFrameCount = 0;
     let mpCamera = null;
@@ -1696,6 +1724,13 @@ window.doLogin = async function() {
       window._previewCamera = null;
       window._previewFaceDetection = null;
       window._previewVideo = video;
+      if (video.srcObject) window._previewMediaStream = video.srcObject;
+      if (typeof window.TestDiag === 'function') {
+        window.TestDiag('preview handoff ready', {
+          hasStream: !!(video.srcObject),
+          liveTracks: video.srcObject ? video.srcObject.getTracks().filter(t => t.readyState === 'live').length : 0,
+        });
+      }
       startScreen.style.display = 'none';
       resizeCanvases();
       drawSilhouette('neutral');
@@ -1708,21 +1743,62 @@ window.doLogin = async function() {
       proceedBtn.disabled = false;
     }
 
-    window._stopCameraPreview = async function () {
+    window._stopCameraPreview = async function (opts) {
+      const preserveStream = !!(opts && opts.preserveStream);
+      const t0 = performance.now();
       window._previewStopping = true;
       const camera = window._previewCamera;
+      const detector = window._previewFaceDetection;
       const video = window._previewVideo || document.querySelector('#cam-stage video');
+      const stream = (video && video.srcObject) || window._previewMediaStream || null;
+      const liveTracksBefore = stream ? stream.getTracks().filter(track => track.readyState === 'live').length : 0;
       window._previewCamera = null;
       window._previewFaceDetection = null;
       window._previewVideo = null;
       mpCamera = null;
-      try { if (camera && typeof camera.stop === 'function') camera.stop(); } catch (e) { console.warn('[CameraPreview] stop failed', e); }
+      if (typeof window.TestDiag === 'function') {
+        window.TestDiag('_stopCameraPreview begin', { preserveStream, hasCamera: !!camera, hasDetector: !!detector, hasVideo: !!video, liveTracksBefore });
+      }
+      try {
+        if (detector && typeof detector.close === 'function') detector.close();
+      } catch (e) { console.warn('[TestDiag] preview FaceDetection close failed', e); }
+      try { if (camera && typeof camera.stop === 'function') camera.stop(); } catch (e) { console.warn('[TestDiag] preview Camera.stop failed', e); }
       try { await (window._previewSendPromise || Promise.resolve()); } catch (e) { /* no preview detector remains */ }
       if (video) {
-        try { if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop()); } catch (e) { console.warn('[CameraPreview] track release failed', e); }
-        video.pause();
-        video.srcObject = null;
+        try { video.pause(); } catch (e) { /* ignore */ }
+        if (preserveStream && stream) {
+          window._handoffMediaStream = stream;
+          window._previewMediaStream = stream;
+          video.srcObject = null;
+          if (typeof window.TestDiag === 'function') window.TestDiag('preview video disconnected; MediaStream preserved for EyeTracker');
+        } else {
+          try {
+            if (stream) stream.getTracks().forEach(track => track.stop());
+          } catch (e) { console.warn('[TestDiag] preview track release failed', e); }
+          video.srcObject = null;
+          window._handoffMediaStream = null;
+          window._previewMediaStream = null;
+          if (typeof window.TestDiag === 'function') window.TestDiag('preview tracks stopped; waiting 300ms for OS camera lock');
+          await new Promise(r => setTimeout(r, 300));
+        }
         if (video.parentNode) video.remove();
+      } else if (preserveStream && stream) {
+        window._handoffMediaStream = stream;
+        window._previewMediaStream = stream;
+      } else if (stream && !preserveStream) {
+        try { stream.getTracks().forEach(track => track.stop()); } catch (e) { /* ignore */ }
+        window._handoffMediaStream = null;
+        window._previewMediaStream = null;
+      }
+      if (typeof window.TestDiag === 'function') {
+        window.Module = undefined;
+        window.TestDiag('_stopCameraPreview done in ' + (performance.now() - t0).toFixed(1) + 'ms', {
+          liveTracksAfter: stream ? stream.getTracks().filter(track => track.readyState === 'live').length : 0,
+          videoDisconnected: !video || !video.srcObject,
+          previewRemoved: !video || !video.isConnected
+        });
+      } else {
+        window.Module = undefined;
       }
     };
 
@@ -1971,6 +2047,7 @@ window.doLogin = async function() {
     <div id="image-container">
       <!-- Fixation crosshair shown for 1s before each image -->
       <div id="crosshair"></div>
+      <div id="fv-fallback-dot" style="display:none;width:28px;height:28px;border-radius:50%;background:#ff2244;box-shadow:0 0 18px rgba(255,34,68,0.55);"></div>
       <img id="stimulus-image" src="" alt="stimulus">
     </div>
     <!-- "Image N / 25" progress shown bottom-centre -->
