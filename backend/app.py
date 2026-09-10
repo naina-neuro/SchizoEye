@@ -41,11 +41,15 @@ app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
 # CORS: set CORS_ORIGINS in Render for additional calling websites.
 # Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
-_cors_origins = os.getenv("CORS_ORIGINS", "https://naina-schizo.netlify.app")
-allowed_origins = (
-    "*" if _cors_origins.strip() == "*"
-    else [origin.strip().rstrip("/") for origin in _cors_origins.split(",") if origin.strip()]
-)
+_default_frontend_origin = "https://naina-schizo.netlify.app"
+_cors_origins = os.getenv("CORS_ORIGINS", _default_frontend_origin)
+if _cors_origins.strip() == "*":
+    allowed_origins = "*"
+else:
+    allowed_origins = list(dict.fromkeys([
+        _default_frontend_origin,
+        *[origin.strip().rstrip("/") for origin in _cors_origins.split(",") if origin.strip()]
+    ]))
 CORS(
     app,
     resources={r"/*": {"origins": allowed_origins}},

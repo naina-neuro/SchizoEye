@@ -349,9 +349,16 @@
     async function loadSessions() {
       try {
         const r = await fetch(`${API}/sessions?_=${Date.now()}`, { cache: 'no-store' });
-        const d = await r.json();
-        return d.success ? d.sessions : [];
-      } catch(e) { return []; }
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+        if (Array.isArray(d)) return d;
+        if (Array.isArray(d.sessions)) return d.sessions;
+        throw new Error(d.error || 'Unexpected sessions response');
+      } catch(e) {
+        console.error('[Dashboard] Could not load sessions:', e);
+        window._sessionsLoadError = e.message;
+        return [];
+      }
     }
 
     // ── DOCTOR SESSION VIEWER ─────────────────────────────────────────────
@@ -360,7 +367,8 @@
       tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--dim);">Loading sessions…</td></tr>';
       const sessions = await loadSessions();
       if (!sessions.length) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--dim);">No sessions found in database.</td></tr>';
+        const message = window._sessionsLoadError || 'No sessions found in database.';
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">${message}</td></tr>`;
         return;
       }
       // Store features in JS map to avoid HTML encoding issues
@@ -398,7 +406,8 @@
       tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">Loading sessions…</td></tr>';
       const sessions = await loadSessions();
       if (!sessions.length) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">No sessions found.</td></tr>';
+        const message = window._sessionsLoadError || 'No sessions found.';
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">${message}</td></tr>`;
         return;
       }
       // Store features in JS map
@@ -1222,15 +1231,11 @@ window.doLogin = async function() {
 
 
   <!-- ─────────────────────────────────────────────────────────────────────────
-     STEP 1 — CAMERA CHECK SCREEN (MediaPipe Face Alignment + Lighting Check)
-     Uses MediaPipe FaceDetection to give live alignment and lighting feedback.
-     The "Proceed" button is only enabled once face is aligned AND well-lit
-     for HOLD_FRAMES consecutive frames.
+    STEP 1 — CAMERA CHECK SCREEN (native camera preview)
+    The preview only confirms that the webcam can be opened. EyeTracker owns
+    the single MediaPipe FaceMesh runtime used by the assessment.
      "Proceed" → BatteryController.startVideoCal()
 ──────────────────────────────────────────────────────────────────────────── -->
-  <!-- MediaPipe scripts (loaded before they're needed) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 
   <style>
     /* ── Face Alignment Screen ──────────────────────────────────────────────── */
@@ -1637,55 +1642,36 @@ window.doLogin = async function() {
     }
 
     async function initFaceAlignment() {
-      try {
-        faceDetector = new FaceDetection({
-          locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-        });
-        faceDetector.setOptions({ model: 'short', minDetectionConfidence: 0.6 });
-        faceDetector.onResults(onResults);
-        window._previewFaceDetection = faceDetector;
-
-        // Find the video element inside cam-stage (WebGazer injects it)
-        function waitForVideo(cb) {
-          const el = document.getElementById('cam-stage').querySelector('video');
-          if (el && el.readyState >= 2) { cb(el); return; }
-          setTimeout(() => waitForVideo(cb), 200);
-        }
-
-        waitForVideo(videoEl => {
-          startScreen.style.display = 'none';
-          resizeCanvases();
-          drawSilhouette('neutral');
-          setStatus('idle', 'Camera active — align your face with the guide');
-          mpCamera = new Camera(videoEl, {
-            onFrame: async () => { await faceDetector.send({ image: videoEl }); },
-            width: 640, height: 480,
-          });
-          window._previewCamera = mpCamera;
-          window._previewVideo = videoEl;
-          mpCamera.start();
-        });
-      } catch(e) {
-        console.error('MediaPipe init error:', e);
-        // Fallback: just enable the button and show a plain message
+      const video = document.getElementById('cam-stage').querySelector('video');
+      if (!video) {
         startScreen.style.display = 'none';
-        setStatus('warning', 'Face detection unavailable — check lighting manually');
-        tipsEl.textContent = 'Could not load face detection. Please ensure good lighting and proceed when ready.';
+        setStatus('warning', 'Camera preview unavailable — proceed manually');
+        tipsEl.textContent = 'Camera preview unavailable. EyeTracker will initialize during calibration.';
         proceedBtn.disabled = false;
+        return;
       }
+      window._previewStopping = false;
+      window._previewCamera = null;
+      window._previewFaceDetection = null;
+      window._previewVideo = video;
+      startScreen.style.display = 'none';
+      resizeCanvases();
+      drawSilhouette('neutral');
+      setStatus('good', 'Camera active — preview ready');
+      tipsEl.innerHTML = '<strong>Camera preview ready.</strong> Continue to calibration when you are seated and well-lit.';
+      proceedBtn.disabled = false;
     }
 
     window._stopCameraPreview = async function () {
+      window._previewStopping = true;
       const camera = window._previewCamera;
-      const detector = window._previewFaceDetection || faceDetector;
       const video = window._previewVideo || document.querySelector('#cam-stage video');
       window._previewCamera = null;
       window._previewFaceDetection = null;
       window._previewVideo = null;
       mpCamera = null;
-      faceDetector = null;
       try { if (camera && typeof camera.stop === 'function') camera.stop(); } catch (e) { console.warn('[CameraPreview] stop failed', e); }
-      try { if (detector && typeof detector.close === 'function') await detector.close(); } catch (e) { console.warn('[CameraPreview] close failed', e); }
+      try { await (window._previewSendPromise || Promise.resolve()); } catch (e) { /* no preview detector remains */ }
       if (video) {
         try { if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop()); } catch (e) { console.warn('[CameraPreview] track release failed', e); }
         video.pause();
