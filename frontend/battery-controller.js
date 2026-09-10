@@ -208,9 +208,6 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
 
   // ── Start Battery ──────────────────────────────────────────────────────────
   function start() {
-    // ── Trigger deferred EyeTracker init (webgazer.begin + alignment) NOW ──
-    if (typeof window._startEyeTrackerNow === 'function') window._startEyeTrackerNow();
-
     subjectId = $('global-subject-id').value.trim() || 'Subject_01';
     patientName = $('global-patient-name').value.trim();
     patientAge = $('global-patient-age').value.trim();
@@ -293,6 +290,9 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
 
   function startVideoCal() {
+    if (typeof window._stopCameraPreview === 'function') {
+      window._stopCameraPreview();
+    }
     $('camera-check-screen').style.display = 'none';
     // Stop the alignment preview stream — EyeTracker opens its own independent stream
     if (typeof window._stopAlignStream === 'function') {
@@ -305,18 +305,28 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   function startClickCal() {
     $('video-cal-screen').style.display = 'none';
 
-    // Ensure calibration runs in fullscreen (must be triggered by user gesture).
+    // Request fullscreen while this handler still has the user's gesture.
     if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(err => console.warn("Fullscreen error", err));
     }
-    
-    // Always use the alignment-aware path so users complete alignment before the grid starts.
-    if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.recalibrate === 'function') {
-      EyeTracker.recalibrate();
-    } else if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.startDirectCalibration === 'function') {
-      // Last-resort fallback for older EyeTracker builds.
-      EyeTracker.startDirectCalibration();
-    }
+
+    // The camera-check FaceDetection runtime must be fully closed before
+    // FaceMesh/TF starts, otherwise both MediaPipe WASM modules collide.
+    (async () => {
+      if (typeof window._stopCameraPreview === 'function') {
+        await window._stopCameraPreview();
+      }
+      if (typeof window._startEyeTrackerNow === 'function') {
+        await window._startEyeTrackerNow();
+      }
+
+      // Always use the alignment-aware path so users complete alignment before the grid starts.
+      if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.recalibrate === 'function') {
+        EyeTracker.recalibrate();
+      } else if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.startDirectCalibration === 'function') {
+        EyeTracker.startDirectCalibration();
+      }
+    })().catch(err => console.error('[BatteryController] Camera handoff failed:', err));
   }
 
   function onCalibrationComplete() {

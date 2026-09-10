@@ -160,7 +160,9 @@
   <script>
     // ── API BASE URL ─────────────────────────────────────────────────────────
     // Set SCHIZOEYE_API_BASE in the hosting platform's generated config.js.
-    const API = (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
+    const API = typeof window.getApiBase === 'function'
+      ? window.getApiBase()
+      : (window.SCHIZOEYE_API_BASE || 'https://schizoeyeclassification.onrender.com').replace(/\/$/, '');
 
     let _currentUser = null;
     let _currentRole = null;
@@ -275,7 +277,7 @@
 }
 
     async function doLogout() {
-      try { await fetch(`${API}/logout`, { method: 'POST' }); } catch(e) {}
+      try { await fetch(`${API}/logout`, { method: 'POST', credentials: 'include' }); } catch(e) {}
       _currentUser = null; _currentRole = null;
       // Clear localStorage on logout
       localStorage.removeItem('currentUser');
@@ -1641,6 +1643,7 @@ window.doLogin = async function() {
         });
         faceDetector.setOptions({ model: 'short', minDetectionConfidence: 0.6 });
         faceDetector.onResults(onResults);
+        window._previewFaceDetection = faceDetector;
 
         // Find the video element inside cam-stage (WebGazer injects it)
         function waitForVideo(cb) {
@@ -1658,6 +1661,8 @@ window.doLogin = async function() {
             onFrame: async () => { await faceDetector.send({ image: videoEl }); },
             width: 640, height: 480,
           });
+          window._previewCamera = mpCamera;
+          window._previewVideo = videoEl;
           mpCamera.start();
         });
       } catch(e) {
@@ -1669,6 +1674,25 @@ window.doLogin = async function() {
         proceedBtn.disabled = false;
       }
     }
+
+    window._stopCameraPreview = async function () {
+      const camera = window._previewCamera;
+      const detector = window._previewFaceDetection || faceDetector;
+      const video = window._previewVideo || document.querySelector('#cam-stage video');
+      window._previewCamera = null;
+      window._previewFaceDetection = null;
+      window._previewVideo = null;
+      mpCamera = null;
+      faceDetector = null;
+      try { if (camera && typeof camera.stop === 'function') camera.stop(); } catch (e) { console.warn('[CameraPreview] stop failed', e); }
+      try { if (detector && typeof detector.close === 'function') await detector.close(); } catch (e) { console.warn('[CameraPreview] close failed', e); }
+      if (video) {
+        try { if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop()); } catch (e) { console.warn('[CameraPreview] track release failed', e); }
+        video.pause();
+        video.srcObject = null;
+        if (video.parentNode) video.remove();
+      }
+    };
 
     // Expose init so BatteryController.start() can call it after WebGazer injects video
     window._initFaceAlignment = initFaceAlignment;
