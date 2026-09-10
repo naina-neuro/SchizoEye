@@ -39,10 +39,9 @@ import secrets
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
-# CORS: restrict origins in production via the CORS_ORIGINS env var.
-# Set CORS_ORIGINS=https://your-app.vercel.app in Render dashboard.
+# CORS: set CORS_ORIGINS in Render for additional calling websites.
 # Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
-_cors_origins = os.getenv("CORS_ORIGINS", "*")
+_cors_origins = os.getenv("CORS_ORIGINS", "https://naina-schizo.netlify.app")
 allowed_origins = (
     "*" if _cors_origins.strip() == "*"
     else [origin.strip().rstrip("/") for origin in _cors_origins.split(",") if origin.strip()]
@@ -68,6 +67,19 @@ def handle_cors_preflight():
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Headers"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return response
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Keep CORS visible to browsers even when a route returns an error."""
+    request_origin = request.headers.get("Origin")
+    if request_origin and (allowed_origins == "*" or request_origin in allowed_origins):
+        response.headers["Access-Control-Allow-Origin"] = request_origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "*"
+        response.headers.add("Vary", "Origin")
     return response
 
 # ── DISABLE BROWSER CACHING FOR ALL RESPONSES ──

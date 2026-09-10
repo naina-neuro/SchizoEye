@@ -87,7 +87,9 @@
  * ============================================================
  */
 const BatteryController = (() => {
-  const API_BASE = (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
+  const API_BASE = typeof window.getApiBase === 'function'
+    ? window.getApiBase()
+    : (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
   const TEST_TOKEN = new URLSearchParams(window.location.search).get('token');
   const apiHeaders = () => TEST_TOKEN ? {'X-Test-Token': TEST_TOKEN} : {};
   // ── State ──────────────────────────────────────────────────────────────────
@@ -2559,19 +2561,39 @@ function cloneRows(rows) {
       if (response.ok && result.success) {
         _lastResult = result;
         _lastPrediction = result.prediction || _lastPrediction;
-        if (window.parent !== window) {
-          window.parent.postMessage({
-            type: 'SCHIZOEYE_TEST_COMPLETE',
-            result: {
-              assessment_id: result.session_id,
-              patient_id: result.patient_id,
-              prediction: result.prediction,
-              features: result.features,
-              feature_order: result.feature_order,
-              report_url: `${API_BASE}${result.report_url}`
+        let pdfBase64 = result.pdf_base64 || '';
+        if (!pdfBase64 && result.report_url) {
+          try {
+            const pdfResponse = await fetch(`${API_BASE}${result.report_url}`, {
+              headers: apiHeaders(),
+              credentials: 'include'
+            });
+            if (pdfResponse.ok) {
+              const pdfBlob = await pdfResponse.blob();
+              pdfBase64 = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(pdfBlob);
+              });
             }
-          }, '*');
+          } catch (pdfError) {
+            console.warn('[BatteryController] Could not fetch generated PDF:', pdfError);
+          }
         }
+        const completionPayload = {
+          type: 'OCULOMOTOR_ASSESSMENT_COMPLETE',
+          status: 'success',
+          sessionId: result.session_id,
+          subjectId: result.subject_id || subjectId,
+          prediction: result.prediction,
+          features: result.features,
+          featureOrder: result.feature_order,
+          reportUrl: `${API_BASE}${result.report_url}`,
+          pdfBase64
+        };
+        if (window.parent !== window) window.parent.postMessage(completionPayload, '*');
+        if (window.opener && window.opener !== window) window.opener.postMessage(completionPayload, '*');
         statusEl.textContent = '✓ Session saved to database successfully!';
         // Disable the save button after successful save
         const saveBtn = document.getElementById('btn-save-session');
