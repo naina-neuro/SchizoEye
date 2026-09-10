@@ -4,8 +4,8 @@ SchizoEye is a browser-based oculomotor assessment application. The static front
 
 ## Architecture
 
-- `frontend/`: static application for Netlify or Vercel.
-- `backend/`: Flask API for Render or Docker.
+- `frontend/`: static application for Netlify.
+- `backend/`: Flask API for Render(Backend mode:Docker).
 - `backend/model_artifacts/`: production model files. These must remain server-side.
 - `Models/`: offline training scripts, notebooks, and training data.
 
@@ -13,8 +13,6 @@ The current model uses two output classes:
 
 - `Healthy`
 - `Schizophrenia`
-
-The source dataset contains `HC`, `FES`, and `CSZ`, but training intentionally merges `FES` and `CSZ` into `Schizophrenia`.
 
 ## Local Backend
 
