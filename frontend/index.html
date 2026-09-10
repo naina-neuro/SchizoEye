@@ -115,6 +115,16 @@
     }
     /* ── USER BADGE now lives inside dashboard headers, not floating ── */
     #user-badge { display: none !important; }
+    #client-debug-panel {
+      display: none; position: fixed; left: 16px; right: 16px; bottom: 16px;
+      z-index: 100000; background: #190d12; border: 1px solid #ef6b7a;
+      color: #ffd9de; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.45);
+      font: 12px/1.45 var(--mono, monospace); max-height: 34vh; overflow: auto;
+    }
+    #client-debug-panel strong { color: #ff9eaa; }
+    #client-debug-log { white-space: pre-wrap; margin: 8px 0; }
+    #client-debug-actions { display: flex; gap: 8px; }
+    #client-debug-actions button { padding: 6px 10px; cursor: pointer; }
     body.headless-mode #login-screen,
     body.headless-mode #user-badge,
     body.headless-mode #doctor-dashboard,
@@ -156,6 +166,14 @@
     <span id="user-badge-name"></span>
     <button id="logout-btn" onclick="doLogout()">Sign Out</button>
   </div>
+  <div id="client-debug-panel" role="alert">
+    <strong>Test diagnostics</strong>
+    <div id="client-debug-log"></div>
+    <div id="client-debug-actions">
+      <button type="button" onclick="window.copyClientDiagnostics()">Copy diagnostics</button>
+      <button type="button" onclick="document.getElementById('client-debug-panel').style.display='none'">Hide</button>
+    </div>
+  </div>
 
   <script>
     // ── API BASE URL ─────────────────────────────────────────────────────────
@@ -166,6 +184,27 @@
 
     let _currentUser = null;
     let _currentRole = null;
+
+    const _clientDiagnostics = [];
+    window.reportClientError = function (stage, error, details) {
+      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
+      const stack = error instanceof Error && error.stack ? `\n${error.stack}` : '';
+      const line = `[${new Date().toISOString()}] ${stage}: ${message}${details ? `\n${details}` : ''}${stack}`;
+      _clientDiagnostics.push(line);
+      const panel = document.getElementById('client-debug-panel');
+      const log = document.getElementById('client-debug-log');
+      if (log) log.textContent = _clientDiagnostics.join('\n\n');
+      if (panel) panel.style.display = 'block';
+      console.error(line);
+    };
+    window.copyClientDiagnostics = async function () {
+      const text = _clientDiagnostics.join('\n\n') || 'No client errors recorded.';
+      try { await navigator.clipboard.writeText(text); } catch (e) { window.prompt('Copy diagnostics:', text); }
+    };
+    window.addEventListener('error', event => {
+      window.reportClientError('window error', event.error || event.message, `${event.filename || ''}:${event.lineno || ''}`);
+    });
+    window.addEventListener('unhandledrejection', event => window.reportClientError('unhandled promise', event.reason));
 
     // Check if user was already logged in (for new tabs)
    function initializeUserFromStorage() {
@@ -277,7 +316,10 @@
 }
 
     async function doLogout() {
-      try { await fetch(`${API}/logout`, { method: 'POST', credentials: 'include' }); } catch(e) {}
+      try {
+        const response = await fetch(`${API}/logout`, { method: 'POST', credentials: 'include' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      } catch(e) { window.reportClientError('logout request', e, `API: ${API}/logout`); }
       _currentUser = null; _currentRole = null;
       // Clear localStorage on logout
       localStorage.removeItem('currentUser');
@@ -357,6 +399,7 @@
       } catch(e) {
         console.error('[Dashboard] Could not load sessions:', e);
         window._sessionsLoadError = e.message;
+        window.reportClientError('dashboard sessions request', e, `API: ${API}/sessions`);
         return [];
       }
     }

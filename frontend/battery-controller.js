@@ -274,6 +274,9 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         };
       } catch(e) {
         console.warn('[BatteryController] Alignment camera stream failed:', e);
+        if (typeof window.reportClientError === 'function') {
+          window.reportClientError('camera permission/preview', e, 'navigator.mediaDevices.getUserMedia failed');
+        }
         // Fallback: skip alignment check and just enable the button
         const proceedBtn = document.getElementById('cam-proceed-btn');
         const tipsEl = document.getElementById('cam-tips');
@@ -290,16 +293,18 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
 
   async function startVideoCal() {
-    if (typeof window._stopCameraPreview === 'function') {
-      await window._stopCameraPreview();
+    try {
+      if (typeof window._stopCameraPreview === 'function') await window._stopCameraPreview();
+      $('camera-check-screen').style.display = 'none';
+      if (typeof window._stopAlignStream === 'function') {
+        window._stopAlignStream();
+        window._stopAlignStream = null;
+      }
+      $('video-cal-screen').style.display = 'flex';
+    } catch (err) {
+      if (typeof window.reportClientError === 'function') window.reportClientError('camera preview teardown', err);
+      $('camera-check-screen').style.display = 'flex';
     }
-    $('camera-check-screen').style.display = 'none';
-    // Stop the alignment preview stream — EyeTracker opens its own independent stream
-    if (typeof window._stopAlignStream === 'function') {
-      window._stopAlignStream();
-      window._stopAlignStream = null;
-    }
-    $('video-cal-screen').style.display = 'flex';
   }
 
   async function startClickCal() {
@@ -328,6 +333,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       }
     } catch (err) {
       console.error('[BatteryController] Camera handoff failed:', err);
+      if (typeof window.reportClientError === 'function') window.reportClientError('EyeTracker startup/calibration', err, `API base: ${API_BASE}`);
       $('video-cal-screen').style.display = 'flex';
       const message = $('video-cal-screen').querySelector('h1');
       if (message) message.textContent = 'Camera setup failed: ' + err.message;
@@ -2407,7 +2413,9 @@ function cloneRows(rows) {
       const szRaw = buildSzRowsForExtractor();
 
       if (fvRaw.length < 10 || spRaw.length < 10 || szRaw.length < 10) {
-        statusEl.textContent = `⚠ Insufficient data — FV:${fvRaw.length} SPEM:${spRaw.length} SZ:${szRaw.length} rows. Complete all three tasks first.`;
+        const message = `Insufficient data - FV:${fvRaw.length} SPEM:${spRaw.length} SZ:${szRaw.length} rows.`;
+        statusEl.textContent = `⚠ ${message} Complete all three tasks first.`;
+        if (typeof window.reportClientError === 'function') window.reportClientError('feature extraction', new Error(message));
         return;
       }
 
@@ -2487,6 +2495,7 @@ function cloneRows(rows) {
 
     } catch(err) {
       statusEl.textContent = '✗ Error: ' + err.message;
+      if (typeof window.reportClientError === 'function') window.reportClientError('feature extraction/inference', err, `API base: ${API_BASE}`);
       console.error('Feature extraction error', err);
     }
   }
@@ -2623,10 +2632,13 @@ function cloneRows(rows) {
         const returnWrap = document.getElementById('return-to-dashboard-wrap');
         if (returnWrap) returnWrap.style.display = 'block';
       } else {
-        statusEl.textContent = `⚠ Save failed: ${result.error || response.statusText}`;
+        const message = `HTTP ${response.status}: ${result.error || response.statusText || 'Save failed'}`;
+        statusEl.textContent = `⚠ ${message}`;
+        if (typeof window.reportClientError === 'function') window.reportClientError('save_results request', new Error(message), `API: ${API_BASE}/save_results`);
       }
     } catch(err) {
       statusEl.textContent = `⚠ Database save failed: ${err.message}`;
+      if (typeof window.reportClientError === 'function') window.reportClientError('save_results request', err, `API: ${API_BASE}/save_results`);
       console.error('Save error:', err);
     }
   }
