@@ -43,9 +43,32 @@ app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 # Set CORS_ORIGINS=https://your-app.vercel.app in Render dashboard.
 # Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
 _cors_origins = os.getenv("CORS_ORIGINS", "*")
-if _cors_origins != "*":
-    _cors_origins = [o.strip() for o in _cors_origins.split(",")]
-CORS(app, origins=_cors_origins, supports_credentials=True)
+allowed_origins = (
+    "*" if _cors_origins.strip() == "*"
+    else [origin.strip().rstrip("/") for origin in _cors_origins.split(",") if origin.strip()]
+)
+CORS(
+    app,
+    resources={r"/*": {"origins": allowed_origins}},
+    supports_credentials=True,
+    allow_headers=["*"],
+    expose_headers=["*"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
+
+
+@app.before_request
+def handle_cors_preflight():
+    if request.method != "OPTIONS":
+        return None
+    response = app.make_default_options_response()
+    request_origin = request.headers.get("Origin")
+    if allowed_origins == "*" or request_origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = request_origin or "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return response
 
 # ── DISABLE BROWSER CACHING FOR ALL RESPONSES ──
 @app.after_request
@@ -741,6 +764,7 @@ def save_results():
             print(f"[DEBUG] sz_gaze uploaded: {gridfs_refs['sz_id']}")
 
         # 2. Generate and Upload PDF Report
+        pdf_bytes = b''
         try:
             print("[DEBUG] Preparing PDF payload...")
             # In save_results(), replace the pdf_payload block:
@@ -776,6 +800,7 @@ def save_results():
             print(f"[DEBUG] PDF uploaded: {gridfs_refs['report_id']}")
         except Exception as pdf_err:
             print(f"Warning: PDF generation/upload failed: {pdf_err}")
+            return jsonify({'success': False, 'error': 'PDF generation failed'}), 500
 
         # 3. Create Main Session Document
         print("[DEBUG] Creating main session document...")
@@ -821,15 +846,28 @@ def save_results():
         print("[DEBUG] Inserting session into MongoDB...")
         insert_result = db[SESSIONS_COLLECTION].insert_one(session_doc)
         print(f"[DEBUG] Session inserted with ID: {insert_result.inserted_id}")
+        session_id = str(insert_result.inserted_id)
+        base64_pdf = (
+            f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode('ascii')}"
+            if pdf_bytes else None
+        )
         return jsonify({
             'success': True,
-            'message': 'Session saved to MongoDB Atlas successfully',
-            'session_id': str(insert_result.inserted_id),
+            'session_id': session_id,
+            'subject_id': subject_id,
             'patient_id': patient_id,
-            'prediction': prediction,
+            'prediction': {
+                'label': prediction['label'],
+                'confidence': float(prediction['confidence']),
+                'probabilities': {
+                    str(label): float(probability)
+                    for label, probability in prediction['probabilities'].items()
+                }
+            },
             'features': validated_features,
             'feature_order': MODEL_FEATURES or REQUIRED_FEATURES,
-            'report_url': f"/sessions/{insert_result.inserted_id}/pdf",
+            'report_url': f"/sessions/{session_id}/pdf",
+            'pdf_base64': base64_pdf,
             'gridfs_refs': {key: str(value) for key, value in session_doc['gridfs_refs'].items()}
         })
 
