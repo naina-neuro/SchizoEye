@@ -289,9 +289,9 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     })();
   }
 
-  function startVideoCal() {
+  async function startVideoCal() {
     if (typeof window._stopCameraPreview === 'function') {
-      window._stopCameraPreview();
+      await window._stopCameraPreview();
     }
     $('camera-check-screen').style.display = 'none';
     // Stop the alignment preview stream — EyeTracker opens its own independent stream
@@ -302,7 +302,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     $('video-cal-screen').style.display = 'flex';
   }
 
-  function startClickCal() {
+  async function startClickCal() {
     $('video-cal-screen').style.display = 'none';
 
     // Request fullscreen while this handler still has the user's gesture.
@@ -312,7 +312,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
 
     // The camera-check FaceDetection runtime must be fully closed before
     // FaceMesh/TF starts, otherwise both MediaPipe WASM modules collide.
-    (async () => {
+    try {
       if (typeof window._stopCameraPreview === 'function') {
         await window._stopCameraPreview();
       }
@@ -322,11 +322,16 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
 
       // Always use the alignment-aware path so users complete alignment before the grid starts.
       if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.recalibrate === 'function') {
-        EyeTracker.recalibrate();
+        await EyeTracker.recalibrate();
       } else if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.startDirectCalibration === 'function') {
-        EyeTracker.startDirectCalibration();
+        await EyeTracker.startDirectCalibration();
       }
-    })().catch(err => console.error('[BatteryController] Camera handoff failed:', err));
+    } catch (err) {
+      console.error('[BatteryController] Camera handoff failed:', err);
+      $('video-cal-screen').style.display = 'flex';
+      const message = $('video-cal-screen').querySelector('h1');
+      if (message) message.textContent = 'Camera setup failed: ' + err.message;
+    }
   }
 
   function onCalibrationComplete() {
