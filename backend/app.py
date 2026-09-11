@@ -9,6 +9,7 @@ import io
 import base64
 import traceback
 import uuid
+import gc
 
 # MongoDB Imports
 from pymongo import MongoClient, errors
@@ -347,18 +348,24 @@ def generate_heatmap_base64(fv_gaze_data):
 
     width = int(df_clean['x'].max()) + 100 
     height = int(df_clean['y'].max()) + 100
-    
-    width = min(max(width, 800), 3000)
-    height = min(max(height, 600), 3000)
-    
-    heatmap_data = np.zeros((height, width))
 
-    for _, row in df_clean.iterrows():
-        x, y = int(row['x']), int(row['y'])
-        if 0 <= x < width and 0 <= y < height:
-            heatmap_data[y, x] += 1
+    # Capped at 1600px: the figure below only ever renders at ~1500x843px
+    # (figsize 10x5.625 @ 150dpi), so a larger raster just burns memory
+    # (a 3000x3000 float64 array is ~72MB, before the gaussian_filter pass
+    # allocates a second same-sized array) without adding visible resolution.
+    width = min(max(width, 800), 1600)
+    height = min(max(height, 600), 1600)
+
+    xs = df_clean['x'].to_numpy(dtype=np.int32, copy=False)
+    ys = df_clean['y'].to_numpy(dtype=np.int32, copy=False)
+    in_bounds = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+    heatmap_data, _, _ = np.histogram2d(
+        ys[in_bounds], xs[in_bounds],
+        bins=[height, width], range=[[0, height], [0, width]]
+    )
 
     heatmap_smoothed = gaussian_filter(heatmap_data, sigma=30)
+    del heatmap_data, xs, ys, in_bounds
 
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(10, 5.625), dpi=150)
@@ -381,9 +388,12 @@ def generate_heatmap_base64(fv_gaze_data):
     plt.tight_layout(pad=0)
     plt.savefig(buf, format='png', facecolor='black', bbox_inches='tight', pad_inches=0)
     plt.close(fig)
+    del heatmap_smoothed, fig, ax
     buf.seek(0)
-    
+
     b64_str = base64.b64encode(buf.read()).decode('utf-8')
+    buf.close()
+    gc.collect()
     return f"data:image/png;base64,{b64_str}"
 
 def _internal_generate_pdf(data):
@@ -814,6 +824,8 @@ def save_results():
                 metadata={**storage_metadata, 'kind': 'pdf_report'}
             )
             print(f"[DEBUG] PDF uploaded: {gridfs_refs['report_id']}")
+            del pdf_bytes, pdf_payload
+            gc.collect()
         except Exception as pdf_err:
             print(f"Warning: PDF generation/upload failed: {pdf_err}")
             return jsonify({'success': False, 'error': 'PDF generation failed'}), 500
