@@ -693,6 +693,9 @@ const EyeTracker = (() => {
         <p style="font-size:12px;color:#5a6a88;margin-bottom:28px;">
           Ensure your face is well-lit and centred in front of the camera.
         </p>
+        <div id="_nt_align_preview" style="position:relative;width:min(420px,82vw);aspect-ratio:4/3;margin:0 auto 24px;overflow:hidden;background:#000;border:1px solid #26324a;border-radius:6px;">
+          <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#5a6a88;font-size:12px;z-index:0;">Camera preview unavailable</span>
+        </div>
         <button id="_nt_start_cal_btn" style="
           padding:12px 28px;
           font-family:var(--mono,'Space Mono',monospace);
@@ -704,6 +707,12 @@ const EyeTracker = (() => {
       </div>`;
     alignScreen.style.cssText='position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bg,#04060a);z-index:2000;';
 
+    const preview = document.getElementById('_nt_align_preview');
+    if (videoEl && preview) {
+      videoEl.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);z-index:1;';
+      preview.appendChild(videoEl);
+    }
+
     const btn = document.getElementById('_nt_start_cal_btn');
     btn.addEventListener('mouseover', () => { btn.style.background='#00e5ff'; btn.style.color='#04060a'; });
     btn.addEventListener('mouseout',  () => { btn.style.background='transparent'; btn.style.color='#00e5ff'; });
@@ -712,11 +721,18 @@ const EyeTracker = (() => {
         document.documentElement.requestFullscreen().catch(() => {});
       }
       alignScreen.style.display='none';
+      if (videoEl) {
+        videoEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:320px;height:240px;pointer-events:none;z-index:-1;';
+        document.body.appendChild(videoEl);
+      }
       buildGrid();
       try {
         await runCalibration();
         startTrackingLoop();
       } catch(err) {
+        isCalibrating = false;
+        hideDotEl();
+        showSpaceHint(false);
         console.error('[EyeTracker v12] Calibration error:', err);
         alert('Calibration failed: ' + err.message + '\nPlease try again.');
         showAlignmentScreen();
@@ -942,6 +958,29 @@ const EyeTracker = (() => {
     pause()               { _paused=true; },
     resume()              { _paused=false; },
     getBlinkCount()       { return 0; },
+
+    stop() {
+      stopTrackingLoop();
+      _listeners = [];
+      _calibrated = false;
+      isCalibrating = false;
+      if (detector && typeof detector.dispose === 'function') {
+        try { detector.dispose(); } catch (_) {}
+      }
+      detector = null;
+      if (videoEl) {
+        try { videoEl.pause(); } catch (_) {}
+        videoEl.srcObject = null;
+        videoEl.remove();
+      }
+      if (videoStream) videoStream.getTracks().forEach(track => track.stop());
+      videoEl = null;
+      videoStream = null;
+      videoTrack = null;
+      _started = false;
+      _startPromise = null;
+      window._handoffMediaStream = null;
+    },
 
     async startDirectCalibration() {
       if (_startPromise) {
