@@ -39,6 +39,13 @@ import secrets
 # template_folder defaults to 'templates/' relative to this file (backend/templates/)
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
+# The frontend is hosted on Netlify while this API is hosted on Render. The
+# login session therefore has to be sent on cross-site fetch requests.
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE="None",
+    SESSION_COOKIE_HTTPONLY=True,
+)
 
 # CORS: set CORS_ORIGINS in Render for additional calling websites.
 # Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
@@ -875,10 +882,6 @@ def save_results():
         insert_result = db[SESSIONS_COLLECTION].insert_one(session_doc)
         print(f"[DEBUG] Session inserted with ID: {insert_result.inserted_id}")
         session_id = str(insert_result.inserted_id)
-        base64_pdf = (
-            f"data:application/pdf;base64,{base64.b64encode(pdf_bytes).decode('ascii')}"
-            if pdf_bytes else None
-        )
         return jsonify({
             'success': True,
             'session_id': session_id,
@@ -895,7 +898,9 @@ def save_results():
             'features': validated_features,
             'feature_order': MODEL_FEATURES or REQUIRED_FEATURES,
             'report_url': f"/sessions/{session_id}/pdf",
-            'pdf_base64': base64_pdf,
+            # The client downloads the stored GridFS report through report_url.
+            # Avoid duplicating the complete PDF in this JSON response.
+            'pdf_base64': None,
             'gridfs_refs': {key: str(value) for key, value in session_doc['gridfs_refs'].items()}
         })
 
