@@ -370,6 +370,7 @@
     }
     function showBatteryIntro() {
   // Hide dashboards, show the battery intro with a back button
+  document.getElementById('battery-intro').classList.remove('protocol-started');
   document.getElementById('doctor-dashboard').style.display = 'none';
   document.getElementById('admin-dashboard').style.display  = 'none';
   document.getElementById('clinician-dashboard').style.display = 'none';

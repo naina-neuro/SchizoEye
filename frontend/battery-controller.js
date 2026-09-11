@@ -209,6 +209,13 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
   // ── Start Battery ──────────────────────────────────────────────────────────
   function start() {
     if (typeof window.TestDiag === 'function') window.TestDiag('BatteryController.start begin');
+    if (typeof window._stopAlignStream === 'function') {
+      window._stopAlignStream();
+      window._stopAlignStream = null;
+    }
+    if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.stop === 'function') {
+      EyeTracker.stop();
+    }
     subjectId = $('global-subject-id').value.trim() || 'Subject_01';
     patientName = $('global-patient-name').value.trim();
     patientAge = $('global-patient-age').value.trim();
@@ -238,6 +245,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         });
     }
 
+    $('battery-intro').classList.add('protocol-started');
     $('battery-intro').style.display = 'none';
 
     // Begin Camera Check
@@ -255,9 +263,22 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     // multiple simultaneous consumers of the same camera on modern browsers).
     (async () => {
       try {
-        const alignStream = await navigator.mediaDevices.getUserMedia({
-          video: { width:{ideal:640}, height:{ideal:480}, facingMode:'user' }
-        });
+        const previewConstraints = [
+          { video: { width:{ideal:640}, height:{ideal:480}, facingMode:'user' } },
+          { video: { facingMode:'user' } },
+          { video: true },
+        ];
+        let alignStream = null;
+        let lastCameraError = null;
+        for (const constraints of previewConstraints) {
+          try {
+            alignStream = await navigator.mediaDevices.getUserMedia(constraints);
+            break;
+          } catch (error) {
+            lastCameraError = error;
+          }
+        }
+        if (!alignStream) throw lastCameraError || new Error('Unable to open camera');
         if (typeof window.TestDiag === 'function') window.TestDiag('preview getUserMedia succeeded', { tracks: alignStream.getTracks().map(track => ({ kind: track.kind, state: track.readyState })) });
         const alignVid = document.createElement('video');
         alignVid.setAttribute('autoplay','');
@@ -274,6 +295,11 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         if (typeof window._initFaceAlignment === 'function') {
           window._initFaceAlignment();
         }
+        const proceedBtn = document.getElementById('cam-proceed-btn');
+        if (proceedBtn) {
+          proceedBtn.textContent = 'Lighting Good — Proceed to Calibration';
+          proceedBtn.onclick = startVideoCal;
+        }
         // Stop the alignment stream once the user proceeds to calibration
         window._stopAlignStream = () => {
           alignStream.getTracks().forEach(t => t.stop());
@@ -285,14 +311,24 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         if (typeof window.reportClientError === 'function') {
           window.reportClientError('camera permission/preview', e, 'navigator.mediaDevices.getUserMedia failed');
         }
-        // Fallback: skip alignment check and just enable the button
+        // Do not proceed without a live stream: EyeTracker would request the
+        // same unavailable camera again and produce a less useful error.
         const proceedBtn = document.getElementById('cam-proceed-btn');
         const tipsEl = document.getElementById('cam-tips');
         const statusText = document.getElementById('cam-status-text');
         const statusBanner = document.getElementById('cam-status-banner');
-        if (proceedBtn) proceedBtn.disabled = false;
-        if (tipsEl) tipsEl.innerHTML = '<strong>Camera preview unavailable.</strong> Ensure good lighting and proceed when ready.';
-        if (statusText) statusText.textContent = 'Camera preview unavailable — proceed manually';
+        if (proceedBtn) {
+          proceedBtn.disabled = false;
+          proceedBtn.textContent = 'Retry Camera';
+          proceedBtn.onclick = start;
+        }
+        const sourceBusy = e.name === 'NotReadableError';
+        if (tipsEl) tipsEl.innerHTML = sourceBusy
+          ? '<strong>Camera is busy or unavailable.</strong> Close Camera, Teams, Zoom, or other browser tabs using the webcam, then retry.'
+          : '<strong>Camera preview unavailable.</strong> Check browser permission, then retry.';
+        if (statusText) statusText.textContent = sourceBusy
+          ? 'Camera is busy — close other camera apps and retry'
+          : 'Camera unavailable — check permission and retry';
         if (statusBanner) statusBanner.className = 'warning';
         const startScreen = document.getElementById('cam-start-screen');
         if (startScreen) startScreen.style.display = 'none';
@@ -303,10 +339,13 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   async function startVideoCal() {
     try {
       if (typeof window.TestDiag === 'function') window.TestDiag('startVideoCal: stopping preview');
-      if (typeof window._stopCameraPreview === 'function') await window._stopCameraPreview();
+      // Preserve the authorized preview stream for EyeTracker. Reopening the
+      // same camera immediately can fail with NotReadableError on Windows.
+      if (typeof window._stopCameraPreview === 'function') {
+        await window._stopCameraPreview({ preserveStream: true });
+      }
       $('camera-check-screen').style.display = 'none';
       if (typeof window._stopAlignStream === 'function') {
-        window._stopAlignStream();
         window._stopAlignStream = null;
       }
       $('video-cal-screen').style.display = 'flex';
@@ -319,6 +358,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
 
   async function startClickCal() {
     if (typeof window.TestDiag === 'function') window.TestDiag('startClickCal begin');
+    $('battery-intro').classList.add('protocol-started');
     $('video-cal-screen').style.display = 'none';
     ['battery-container', 'calibration-screen', 'cal-screen', 'cal-dot'].forEach(id => {
       const element = $(id);
@@ -349,7 +389,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     // FaceMesh/TF starts, otherwise both MediaPipe WASM modules collide.
     try {
       if (typeof window._stopCameraPreview === 'function') {
-        await window._stopCameraPreview();
+        await window._stopCameraPreview({ preserveStream: true });
       }
       if (typeof window.TestDiag === 'function') window.TestDiag('preview teardown complete; starting EyeTracker');
       if (typeof window._startEyeTrackerNow === 'function') {
