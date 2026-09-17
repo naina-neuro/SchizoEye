@@ -62,6 +62,8 @@
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@3.20.0/dist/tf-converter.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@3.20.0/dist/tf-backend-webgl.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.5/dist/face-landmarks-detection.min.js"></script>
   <!-- Plotly: used in battery-controller.js to render SPEM graphs -->
   <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
@@ -1713,35 +1715,61 @@ window.doLogin = async function() {
     }
 
     async function initFaceAlignment() {
-      const video = document.getElementById('cam-stage').querySelector('video');
-      if (!video) {
-        startScreen.style.display = 'none';
-        setStatus('warning', 'Camera preview unavailable — proceed manually');
-        tipsEl.textContent = 'Camera preview unavailable. EyeTracker will initialize during calibration.';
-        proceedBtn.disabled = false;
-        return;
-      }
-      window._previewStopping = false;
-      window._previewCamera = null;
-      window._previewFaceDetection = null;
-      window._previewVideo = video;
-      if (video.srcObject) window._previewMediaStream = video.srcObject;
-      if (typeof window.TestDiag === 'function') {
-        window.TestDiag('preview handoff ready', {
-          hasStream: !!(video.srcObject),
-          liveTracks: video.srcObject ? video.srcObject.getTracks().filter(t => t.readyState === 'live').length : 0,
+      try {
+        const video = document.getElementById('cam-stage').querySelector('video');
+        if (!video) {
+          startScreen.style.display = 'none';
+          setStatus('warning', 'Camera preview unavailable — check camera');
+          tipsEl.textContent = 'Camera preview unavailable. Please retry camera access.';
+          proceedBtn.disabled = true;
+          return;
+        }
+
+        // Restore the original working camera-check runtime. The model added
+        // to this build must not change the pre-test face/lighting gate.
+        const faceDetector = new FaceDetection({
+          locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
         });
+        faceDetector.setOptions({ model: 'short', minDetectionConfidence: 0.6 });
+        faceDetector.onResults(onResults);
+
+        window._previewStopping = false;
+        window._previewFaceDetection = faceDetector;
+        window._previewVideo = video;
+        window._previewMediaStream = video.srcObject || null;
+
+        startScreen.style.display = 'none';
+        resizeCanvases();
+        drawSilhouette('neutral');
+        setStatus('idle', 'Camera active — align your face with the guide');
+
+        // Keep using the preview stream for the check. BatteryController's
+        // teardown hands this same stream to EyeTracker, avoiding a second
+        // getUserMedia call and preserving the new camera/FPS changes.
+        const mpCamera = new Camera(video, {
+          onFrame: async () => {
+            if (!window._previewStopping) await faceDetector.send({ image: video });
+          },
+          width: 640,
+          height: 480,
+        });
+        window._previewCamera = mpCamera;
+        mpCamera.start();
+
+        if (typeof window.TestDiag === 'function') {
+          window.TestDiag('original face/lighting detector started', {
+            hasStream: !!video.srcObject,
+            liveTracks: video.srcObject ? video.srcObject.getTracks().filter(t => t.readyState === 'live').length : 0
+          });
+        }
+      } catch (e) {
+        console.error('[CameraCheck] MediaPipe init error:', e);
+        if (typeof window.TestDiag === 'function') window.TestDiag('face/lighting detector init failed', { name: e.name, message: e.message });
+        startScreen.style.display = 'none';
+        setStatus('warning', 'Face detection unavailable — retry camera');
+        tipsEl.textContent = 'Could not start face detection. Please retry camera access.';
+        proceedBtn.disabled = true;
       }
-      startScreen.style.display = 'none';
-      resizeCanvases();
-      drawSilhouette('neutral');
-      setStatus('good', 'Camera active — preview ready');
-      tipsEl.innerHTML = '<strong>Camera preview ready.</strong> Continue to calibration when you are seated and well-lit.';
-      alignScoreEl.textContent = 'Ready';
-      lightScoreEl.textContent = 'Check lighting';
-      alignMeterEl.style.width = '100%';
-      lightMeterEl.style.width = '70%';
-      proceedBtn.disabled = false;
     }
 
     window._stopCameraPreview = async function (opts) {

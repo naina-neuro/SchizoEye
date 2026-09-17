@@ -342,7 +342,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       // Preserve the authorized preview stream for EyeTracker. Reopening the
       // same camera immediately can fail with NotReadableError on Windows.
       if (typeof window._stopCameraPreview === 'function') {
-        await window._stopCameraPreview({ preserveStream: true });
+        await window._stopCameraPreview({ preserveStream: false });
       }
       $('camera-check-screen').style.display = 'none';
       if (typeof window._stopAlignStream === 'function') {
@@ -389,7 +389,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     // FaceMesh/TF starts, otherwise both MediaPipe WASM modules collide.
     try {
       if (typeof window._stopCameraPreview === 'function') {
-        await window._stopCameraPreview({ preserveStream: true });
+        await window._stopCameraPreview({ preserveStream: false });
       }
       if (typeof window.TestDiag === 'function') window.TestDiag('preview teardown complete; starting EyeTracker');
       if (typeof window._startEyeTrackerNow === 'function') {
@@ -2485,6 +2485,7 @@ function cloneRows(rows) {
   // ── Feature extraction and model inference ──
   async function runAIClassification() {
     const statusEl = document.getElementById('ai-status-text');
+    let featuresReady = false;
     try {
       statusEl.textContent = '⏳ Step 1/2 — Parsing raw gaze data...';
       await new Promise(r => setTimeout(r, 60));
@@ -2504,9 +2505,6 @@ function cloneRows(rows) {
       statusEl.textContent = '⏳ Step 2/2 — Extracting 59 oculomotor features...';
       await new Promise(r => setTimeout(r, 60));
 
-      // FIX BC-MATH-6: use this session's real, live-calibrated pxPerDeg
-      // (not a fixed 37) so degree-based features reflect the participant's
-      // actual screen/viewing geometry instead of a hardcoded assumption.
       const fvRows2 = normalizeFv(fvRaw, pxPerDeg);
       const spRows2 = normalizeSpem(spRaw, pxPerDeg);
       const szRows2 = normalizeSz(szRaw, pxPerDeg);
@@ -2521,10 +2519,10 @@ function cloneRows(rows) {
         CONFIG.fixationSingle.dispersionThresholdDeg,
         CONFIG.fixationSingle.ampDegPerUnit,
         CONFIG.fixationSingle.scanpathScale);
-      fm.fix_fs_fn  = fixS.fixNum;
-      fm.fix_fs_fd  = fixS.fixDur;
-      fm.fix_fs_sn  = fixS.sacNum;
-      fm.fix_fs_sa  = fixS.sacAmp;
+      fm.fix_fs_fn = fixS.fixNum;
+      fm.fix_fs_fd = fixS.fixDur;
+      fm.fix_fs_sn = fixS.sacNum;
+      fm.fix_fs_sa = fixS.sacAmp;
       fm.fix_fs_spl = fixS.scanpath;
 
       const fixM = extractFixationCondition(szRows2,
@@ -2532,21 +2530,14 @@ function cloneRows(rows) {
         CONFIG.fixationDistractor.dispersionThresholdDeg,
         CONFIG.fixationDistractor.ampDegPerUnit,
         CONFIG.fixationDistractor.scanpathScale);
-      fm.fix_fd_fn  = fixM.fixNum;
-      fm.fix_fd_fd  = fixM.fixDur;
-      fm.fix_fd_sn  = fixM.sacNum;
-      fm.fix_fd_sa  = fixM.sacAmp;
+      fm.fix_fd_fn = fixM.fixNum;
+      fm.fix_fd_fd = fixM.fixDur;
+      fm.fix_fd_sn = fixM.sacNum;
+      fm.fix_fd_sa = fixM.sacAmp;
       fm.fix_fd_spl = fixM.scanpath;
 
       Object.assign(fm, extractAntisaccade(szRows2, screen));
 
-      // FIX BC-MATH-10: finalizeFeature now returns {value, lowConfidence}
-      // instead of a bare number. `finalFeatures` keeps exactly the 59
-      // named columns (unchanged contract); `dataQuality` is a separate,
-      // non-feature side-channel flagging which features (if any) fell
-      // back to a no-data placeholder rather than a real measurement, so
-      // downstream analysis/ML can see it instead of trusting the number
-      // blindly.
       const finalFeatures = {};
       const dataQuality = {};
       for (const name of FEATURE_ORDER) {
@@ -2557,28 +2548,50 @@ function cloneRows(rows) {
 
       _lastFeatures = finalFeatures;
       _lastDataQuality = dataQuality;
-      statusEl.textContent = '⏳ Sending the 59 features to the inference API...';
-      const classifyResponse = await fetch(`${API_BASE}/classify`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json', ...apiHeaders()},
-        credentials: 'include',
-        body: JSON.stringify({features: finalFeatures})
-      });
-      const classifyData = await classifyResponse.json();
-      if (!classifyResponse.ok || !classifyData.success) {
-        throw new Error(classifyData.error || 'Inference failed');
-      }
-      _lastPrediction = classifyData.prediction;
-      statusEl.textContent = `✓ Inference complete — ${classifyData.prediction.label}`;
-      renderFeaturesOnly(finalFeatures);
-      renderPrediction(_lastPrediction);
-      document.getElementById('btn-dl-pdf').style.display = 'inline-block';
-      await saveSessionToDatabase();
+      featuresReady = true;
 
+      // Render the extracted features BEFORE inference. A model/API failure
+      // must never hide the measurements that were successfully collected.
+      renderFeaturesOnly(finalFeatures);
+
+      // Classification is best-effort. Persistence is mandatory after feature
+      // extraction. The backend also re-validates/inferences during saving.
+      statusEl.textContent = '⏳ Sending the 59 features to the inference API...';
+      try {
+        const classifyResponse = await fetch(`${API_BASE}/classify`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', ...apiHeaders()},
+          credentials: 'include',
+          body: JSON.stringify({features: finalFeatures})
+        });
+        const classifyData = await classifyResponse.json().catch(() => ({}));
+        if (!classifyResponse.ok || !classifyData.success) {
+          throw new Error(classifyData.error || `Inference HTTP ${classifyResponse.status}`);
+        }
+        _lastPrediction = classifyData.prediction;
+        statusEl.textContent = `✓ Inference complete — ${classifyData.prediction.label}`;
+        renderPrediction(_lastPrediction);
+        document.getElementById('btn-dl-pdf').style.display = 'inline-block';
+      } catch (inferenceErr) {
+        _lastPrediction = null;
+        statusEl.textContent = `⚠ Inference unavailable — saving collected data anyway...`;
+        console.warn('[BatteryController] Classification failed; continuing to save:', inferenceErr);
+        if (typeof window.reportClientError === 'function') window.reportClientError('classification (non-blocking)', inferenceErr, `API: ${API_BASE}/classify`);
+      }
+
+      // This is intentionally outside the inference try/catch: once features
+      // exist, the session must be sent to /save_results regardless of model
+      // availability. A 401/403 is still a genuine authorization failure.
+      await saveSessionToDatabase();
     } catch(err) {
       statusEl.textContent = '✗ Error: ' + err.message;
-      if (typeof window.reportClientError === 'function') window.reportClientError('feature extraction/inference', err, `API base: ${API_BASE}`);
+      if (typeof window.reportClientError === 'function') window.reportClientError('feature extraction', err, `API base: ${API_BASE}`);
       console.error('Feature extraction error', err);
+      // If feature extraction completed but a later non-model step failed,
+      // make one final persistence attempt rather than silently losing data.
+      if (featuresReady) {
+        try { await saveSessionToDatabase(); } catch (_) {}
+      }
     }
   }
 

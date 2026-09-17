@@ -1,205 +1,173 @@
 /**
- * EyeTracker — NeurOcular Engine  v12.0 (HIGH-FPS / 120 Hz, zero-alloc hot path)
+ * EyeTracker — NeurOcular Engine  v13.0
  * ════════════════════════════════════════════════════════════════
  *
- *  ENGINE UPGRADE (v12.0 — Listener-overhead eliminated):
- *    ✦ Video element OFFSCREEN-VISIBLE (320×240 at -9999px) — fixes Chromium
- *      throttling rVFC for 1×1 invisible elements
- *    ✦ Multi-constraint camera fallback: 640×360@120 → 640×480@120 → 1280×720@60
- *    ✦ Mutate _latestGaze IN PLACE — zero allocation per gaze emission
- *    ✦ irisRadius hoisted out of extractFeatures — no nested fn allocation
- *    ✦ Cursor DOM writes throttled to ~60 Hz (was 120 Hz, wasted on display)
- *    ✦ Per-stage timing metrics: detectorMs, processMs, listenerMs
+ *  WHAT CHANGED VS v12 (and why)
+ *  ─────────────────────────────
+ *  1. ONE CAMERA, ONE PREVIEW, ONE DETECTOR.
+ *     v12 opened a getUserMedia stream in BatteryController.start() for the
+ *     lighting screen, then EyeTracker opened/handed-off its own, then
+ *     showAlignmentScreen() drew a SECOND camera preview ("Eye Tracker
+ *     Ready") before the grid. That is the "camera opens twice / extra
+ *     calibration screen" symptom. showAlignmentScreen() is gone. The
+ *     camera-check screen now previews EyeTracker's own <video> through
+ *     startPreview(), so what the operator sees is literally what the
+ *     tracker sees, and nothing is opened a second time.
  *
- *  BASELINE (v11.0):
- *    ✦ requestVideoFrameCallback() per-frame processing (no rAF 60Hz cap)
- *    ✦ Concurrent face-mesh detection with _detectorBusy guard
- *    ✦ Camera at 640×480 native (was 1280×720 forcing fallback)
- *    ✦ HUD writes throttled time-based @ 5 Hz
- *    ✦ Gaze sequence numbers for accurate downstream dedup
- *    ✦ Reusable Float64 feature buffer
+ *  2. FRAME LOOP IS rAF-DRIVEN, NOT rVFC-DRIVEN.
+ *     v12 drove inference from requestVideoFrameCallback on a video parked
+ *     at left:-9999px. Chromium throttles (and in some states stops) rVFC
+ *     for videos it considers non-rendered, and the element was also moved
+ *     between three different parents during startup. When rVFC stopped
+ *     firing, processGazeSample() never ran, no onGaze listener ever fired,
+ *     and every task recorded zero rows -> "FV:0 SPEM:0 SZ:0". The loop is
+ *     now plain requestAnimationFrame (60 Hz >> the 33-50 FPS MediaPipe
+ *     ceiling, so nothing is lost) with a 2 s stall watchdog that clears a
+ *     stuck _detectorBusy flag and restarts the loop.
  *
- *  REAL-WORLD CEILING NOTE:
- *    MediaPipe FaceMesh + refineLandmarks runs ~20-30 ms/frame on consumer
- *    hardware → hard ceiling of 33-50 FPS regardless of architecture. To
- *    exceed that, the model itself would need to be replaced or run on a
- *    Worker with OffscreenCanvas, which requires a full rewrite explicitly
- *    out of scope. v12 minimises all OTHER overhead so we get as close to
- *    the model ceiling as possible.
+ *  3. CAMERA SELECTION NO LONGER PREFERS IR CAMERAS.
+ *     v12 scored device labels with `label.includes('ir')`, which matches
+ *     "Wireless", "Virtual", "Direct", "IR Camera", ... On laptops with a
+ *     Windows Hello IR sensor this selected the infrared camera: a dark
+ *     red/greyscale image that FaceMesh cannot land 478 landmarks on. The
+ *     matcher is now word-boundary based and *demotes* IR/depth devices.
+ *     listCameras()/switchCamera() let the operator override from the UI.
  *
- *  API CONTRACT (backward-compatible):
- *    EyeTracker.isCalibrated()         → bool
- *    EyeTracker.getGaze()              → {x,y,velocity,isBlink,confidence,fps,ts,seq}
- *    EyeTracker.getCalibrationError()  → number (px RMS)
- *    EyeTracker.onGaze(fn)             register frame listener
- *    EyeTracker.offGaze(fn)            deregister listener
- *    EyeTracker.recalibrate()          async – re-runs full calibration
- *    EyeTracker.pause() / resume()
- *    EyeTracker.getFPS()               → processingFps
- *    EyeTracker.getCameraFPS() / getActualFPS()
- *    EyeTracker.getPerformanceStats()  → {…, detectorMs, processMs, listenerMs}
- *    EyeTracker.getDroppedFrames() / getTotalFrames() / getProcessedFrames()
- *    window._startEyeTrackerNow()      deferred start
+ *  4. CALIBRATION IS AUTOMATIC AND SELF-CHECKING.
+ *     33 points x "press SPACE" is 33 chances to capture a frame where the
+ *     participant is not actually on the dot. Now: 20 points (5x4), dot
+ *     travels, settles, shrinks, and samples are pulled from the loop's
+ *     latest landmarks with a quality gate; weak points are retried once;
+ *     then 5 held-out validation points measure real error in pixels and
+ *     the result is shown with Continue / Recalibrate.
+ *
+ *  5. THE GAZE CURSOR IS HIDDEN AFTER CALIBRATION.
+ *     A dot following the participant's gaze during SPEM / antisaccade /
+ *     free viewing is a closed feedback loop and contaminates every task.
+ *     setCursorVisible(true) if you want it back for debugging.
+ *
+ *  API (superset of v12 — nothing that battery-controller.js called was removed)
+ *  ─────────────────────────────────────────────────────────────────────────
+ *    window._startEyeTrackerNow()          open camera + load FaceMesh
+ *    EyeTracker.startPreview(el, onStats)  show live preview inside el
+ *    EyeTracker.stopPreview()              park the video, keep the stream
+ *    EyeTracker.listCameras()              -> [{deviceId,label,isIR}]
+ *    EyeTracker.switchCamera(deviceId)     re-open on another device
+ *    EyeTracker.calibrate()                full grid + validation
+ *    EyeTracker.recalibrate()              alias of calibrate()
+ *    EyeTracker.startDirectCalibration()   alias of calibrate()
+ *    EyeTracker.isCalibrated() / getCalibrationError()
+ *    EyeTracker.onGaze(fn) / offGaze(fn) / getGaze()
+ *    EyeTracker.isEmitting()               true if gaze fired in last 1.5 s
+ *    EyeTracker.getPerformanceStats()      incl. emitting / lastEmitAgoMs
+ *    EyeTracker.setCursorVisible(bool)
+ *    EyeTracker.pause() / resume() / stop()
  */
 
 'use strict';
 
 const EyeTracker = (() => {
 
-  // ── DOM refs ─────────────────────────────────────────────────
-  const calScreen     = document.getElementById('cal-screen');
-  const calProg       = document.getElementById('cal-progress');
-  const calDot        = document.getElementById('cal-dot');
-  const cursor        = document.getElementById('gaze-cursor');
-  const ring          = document.getElementById('gaze-ring');
-  const hud           = document.getElementById('hud');
-  const hx            = document.getElementById('hx');
-  const hy            = document.getElementById('hy');
-  const hvEl          = document.getElementById('hv');
-  const he            = document.getElementById('he');
-  const hb            = document.getElementById('hb');
-  const hfpsEl        = document.getElementById('hfps');
-  const htrkfpsEl     = document.getElementById('htrkfps');
-  const hconfEl       = document.getElementById('hconf');
-  const hstabEl       = document.getElementById('hstab');
-  const blinkLed      = document.getElementById('blink-led');
-  const recalBtn      = document.getElementById('btn-recal');
-  const flash         = document.getElementById('flash');
-  const headCalScreen = document.getElementById('head-cal-screen');
-  const alignScreen   = document.getElementById('alignment-screen');
-
+  const $ = (id) => document.getElementById(id);
   const W = () => window.innerWidth;
   const H = () => window.innerHeight;
+  const nap = (ms) => new Promise(r => setTimeout(r, ms));
 
-  // ── Configuration ─────────────────────────────────────────────
+  // ── Configuration ────────────────────────────────────────────
   const CFG = {
-    SOLUTION_PATH        : 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/',
-    CALIB_SAMPLES        : 12,
-    CALIB_SAMPLE_INTERVAL: 60,
-    RIDGE_LAMBDA         : 1e-3,
-    SACCADE_THRESH_PX_S  : 180,
-    FIXATION_RADIUS_PX   : 38,
-    FIXATION_MIN_MS      : 100,
-    FPS_WINDOW           : 30,
-    TARGET_FPS           : 120,
-    QUALITY_SCORE_THRESHOLD : 0.7,
-    VELOCITY_SCALE_FACTOR   : 0.8,
+    SOLUTION_PATH   : 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/',
 
-    HUD_UPDATE_MS        : 200,    // ~5 Hz HUD
-    CURSOR_UPDATE_MS     : 16,     // ~60 Hz cursor (display-rate; faster is wasted)
+    GRID_COLS       : 5,
+    GRID_ROWS       : 4,
+    DOT_TRAVEL_MS   : 420,
+    SETTLE_MS       : 320,
+    CAPTURE_MS      : 750,
+    CAPTURE_TARGET  : 10,
+    SAMPLE_POLL_MS  : 30,
+    MIN_PER_POINT   : 4,
+    MIN_TOTAL       : 60,
+    QUALITY_MIN     : 0.18,
+    RIDGE_LAMBDA    : 1e-3,
+
+    VALIDATION_PTS  : 5,
+    GOOD_RMS_PX     : 90,
+    POOR_RMS_PX     : 190,
+
+    SACCADE_THRESH_PX_S : 180,
+    FIXATION_RADIUS_PX  : 38,
+    FIXATION_MIN_MS     : 100,
+    FPS_WINDOW          : 30,
+    VELOCITY_SCALE_FACTOR : 0.8,
+
+    HUD_UPDATE_MS   : 200,
+    CURSOR_UPDATE_MS: 16,
+    STALL_MS        : 2000,
+    FACE_WAIT_MS    : 20000,
   };
 
-  // FIX FPS-11: Try multiple constraint sets in order of preference.
-  // Many 120 FPS monochrome cameras only do 120 FPS at 640×360, not 640×480.
-  // No `min` constraint anywhere — that forces failure on cameras that
-  // don't advertise the floor but can deliver it.
+  // 640x480@60 first: MediaPipe FaceMesh tops out near 33-50 FPS anyway, and
+  // 60 FPS modes are far more widely supported (and better exposed) than the
+  // 120 FPS modes v12 asked for first.
   const CAMERA_CONSTRAINT_SETS = [
-    { name: '640x360@120', video: { width:{ideal:640}, height:{ideal:360}, frameRate:{ideal:120} } },
-    { name: '640x480@120', video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:120} } },
-    { name: '320x240@120', video: { width:{ideal:320}, height:{ideal:240}, frameRate:{ideal:120} } },
-    { name: '640x480@60',  video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:60}  } },
-    { name: '640x480@30',  video: { width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30}  } },
-    { name: '320x240@30',  video: { width:{ideal:320}, height:{ideal:240}, frameRate:{ideal:30}  } },
-    { name: 'default',     video: { facingMode:'user' } },
+    { name: '640x480@60',  video: { width:{ideal:640},  height:{ideal:480}, frameRate:{ideal:60} } },
+    { name: '1280x720@30', video: { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} } },
+    { name: '640x480@30',  video: { width:{ideal:640},  height:{ideal:480}, frameRate:{ideal:30} } },
+    { name: 'default',     video: {} },
   ];
+
+  // Word-boundary match so "Wireless"/"Virtual"/"Direct" are not read as "ir".
+  const IR_LABEL_RE = /(^|[^a-z])(ir|infra[- ]?red|depth|tof|3d)([^a-z]|$)/i;
+  const CAMERA_PREF_KEY = 'neurocular.cameraId';
 
   function tdiag(msg, extra) {
     if (typeof window.TestDiag === 'function') { window.TestDiag(msg, extra); return; }
-    const ts = new Date().toISOString().split('T')[1].replace('Z', '');
-    if (extra !== undefined) console.log(`[TestDiag ${ts}] ${msg}`, extra);
-    else console.log(`[TestDiag ${ts}] ${msg}`);
+    if (extra !== undefined) console.log('[EyeTracker] ' + msg, extra);
+    else console.log('[EyeTracker] ' + msg);
   }
 
-  function waitMs(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-  function streamIsLive(stream) {
-    return !!(stream && typeof stream.getVideoTracks === 'function' &&
-      stream.getVideoTracks().some(t => t.readyState === 'live'));
-  }
-
-  function attachWebglGuard(canvas, label) {
-    if (!canvas || canvas._testdiagWebglGuard) return;
-    canvas._testdiagWebglGuard = true;
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
-      console.warn('[TestDiag] WebGL context lost on ' + label + ', attempting restore');
-    }, false);
-  }
-
-  // ── Iris & eye-corner landmark indices ───────────────────────
-  const IRIS_IDX = { L_CENTER:468, L_RING:[469,470,471,472], R_CENTER:473, R_RING:[474,475,476,477] };
-  const EYE_CORNERS = { L_inner:133, L_outer:33, R_inner:362, R_outer:263 };
+  // ── Landmark indices ─────────────────────────────────────────
+  const IRIS_IDX     = { L_CENTER:468, L_RING:[469,470,471,472], R_CENTER:473, R_RING:[474,475,476,477] };
+  const EYE_CORNERS  = { L_inner:133, L_outer:33, R_inner:362, R_outer:263 };
+  const FACE_EDGE    = { LEFT:234, RIGHT:454, TOP:10, CHIN:152, NOSE:1 };
 
   // ── Module state ─────────────────────────────────────────────
-  let detector     = null;
-  let videoEl      = null;
-  let videoStream  = null;
-  let videoTrack   = null;
+  let detector = null, videoEl = null, videoStream = null, videoTrack = null;
+  let _started = false, _startPromise = null;
 
-  let _rvfcHandle  = null;
-  let _running     = false;
-  let _hasRVFC     = false;
+  let _mode = 'idle';               // idle | preview | calibrating | tracking
+  let _running = false;
+  let _rafHandle = null;
+  let _watchdog = null;
+  let _detectorBusy = false;
 
-  // Camera performance metrics
-  let _cameraFps    = 0;
-  let _requestedFps = CFG.TARGET_FPS;
-  let _actualFps    = 0;
-  let _cameraResolution = '';
+  let _lastKp = null, _lastKpTs = 0, _lastQuality = 0, _lastGeom = null;
+  let _lastFrameTs = 0, _lastEmitTs = 0;
 
-  // Per-stage frame counters
-  let _totalFrames    = 0;
-  let _processedFrames= 0;
-  let _droppedFrames  = 0;
-  let _emittedSamples = 0;
+  let _calibrated = false, isCalibrating = false, _calAborted = false;
+  let modelX = null, modelY = null, _calError = 0, _validationError = null;
 
-  // Per-stage latency tracking (EWMA — no array allocations)
-  let _detectorMs     = 0;
-  let _processMs      = 0;
-  let _listenerMs     = 0;
+  let _paused = false;
+  let _listeners = [];
+  let _gazeSeq = 0;
+  let _previewCb = null;
+
+  let _cameraFps = 0, _actualFps = 0, _cameraResolution = '', _requestedFps = 60;
+  let _totalFrames = 0, _processedFrames = 0, _droppedFrames = 0, _emittedSamples = 0;
+  let _detectorMs = 0, _processMs = 0, _listenerMs = 0;
   const LATENCY_ALPHA = 0.1;
 
-  let _detectorBusy   = false;
+  const _latestGaze = { x:0, y:0, velocity:0, isBlink:false, confidence:1, fps:0, ts:0, seq:0 };
 
-  let calibPoints  = [];
-  let calibData    = [];
-  let isCalibrating= false;
-  let _calibrated  = false;
-  let modelX       = null;
-  let modelY       = null;
-  let _calError    = 0;
-
-  let _paused      = false;
-  let _listeners   = [];
-  let _gazeSeq     = 0;
-
-  // FIX FPS-12: mutated in-place — no per-emission allocation.
-  // External consumers get a spread copy via getGaze().
-  const _latestGaze = {
-    x: 0, y: 0,
-    velocity: 0,
-    isBlink: false,
-    confidence: 1,
-    fps: 0,
-    ts: 0,
-    seq: 0,
-  };
-
-  // Saccade / fixation
-  let prevGaze = null, prevTime = null;
-  let saccadeVel = 0;
+  let prevGaze = null, prevTime = null, saccadeVel = 0;
   let fixCluster = null, fixStart = 0, fixating = false;
 
-  // FPS rolling window
   const fpsBuf = [];
   let _fps = 0;
-
-  let _hudLastUpdate    = 0;
-  let _cursorLastUpdate = 0;
-
-  // Reusable feature buffer
+  let _hudLastUpdate = 0, _cursorLastUpdate = 0;
+  let _renderX = 0, _renderY = 0;
   const _featureBuf = new Float64Array(12);
 
-  // ── Kalman Filter ─────────────────────────────────────────────
+  // ── Kalman filter (unchanged maths from v12) ─────────────────
   const KF = {
     px:0, vx:0, py:0, vy:0,
     pPP:500, pPV:0, pVP:0, pVV:500,
@@ -218,52 +186,43 @@ const EyeTracker = (() => {
     const q01=KF.qPV+dt*KF.qVV, q10=KF.qVP+dt*KF.qVV, q11=KF.qVV+KF.Q_v;
     KF.qPP=q00; KF.qPV=q01; KF.qVP=q10; KF.qVV=q11;
   }
-
   function kfUpdate(mx, my) {
-    // FIX ET-2: snapshot pre-update covariance
     const pPP0=KF.pPP, pPV0=KF.pPV;
     const Sx=pPP0+KF.R, KgP=pPP0/Sx, KgV=KF.pVP/Sx, ex=mx-KF.px;
     KF.px+=KgP*ex; KF.vx+=KgV*ex;
     KF.pPP=pPP0*(1-KgP); KF.pPV=pPV0*(1-KgP);
     KF.pVP-=KgV*pPP0;    KF.pVV-=KgV*pPV0;
-    // FIX ET-3: same fix for Y
     const qPP0=KF.qPP, qPV0=KF.qPV;
     const Sy=qPP0+KF.R, LgP=qPP0/Sy, LgV=KF.qVP/Sy, ey=my-KF.py;
     KF.py+=LgP*ey; KF.vy+=LgV*ey;
     KF.qPP=qPP0*(1-LgP); KF.qPV=qPV0*(1-LgP);
     KF.qVP-=LgV*qPP0;    KF.qVV-=LgV*qPV0;
   }
-
   function applyKalman(rawX, rawY, tsMs) {
-    if (!KF.inited) { KF.px=rawX; KF.py=rawY; KF.inited=true; lastKfTime=tsMs; KF.vx=0; KF.vy=0; return; }
-    // FIX ET-4: floor dt at 1ms (critical at 120 Hz where frames can collide)
+    if (!KF.inited) { KF.px=rawX; KF.py=rawY; KF.vx=0; KF.vy=0; KF.inited=true; lastKfTime=tsMs; return; }
     const dt = Math.max(0.001, Math.min((tsMs - lastKfTime)/1000, 0.1));
     lastKfTime = tsMs;
     kfPredict(dt);
     kfUpdate(rawX, rawY);
-    // Caller reads KF.px / KF.py directly — no allocation
   }
 
-  // ── Feature extraction (12-D) — hoisted helpers, no nested fn ──
-  // FIX FPS-13: hoisted outside extractFeatures to avoid closure allocation
-  // on every detection cycle.
+  // ── Feature extraction (12-D, unchanged) ─────────────────────
   function _irisRadius(kp, center, ringIdx, vScale) {
-    let s=0;
+    let s = 0;
     for (let i=0;i<ringIdx.length;i++) {
-      const p=kp[ringIdx[i]];
-      const dx=p.x-center.x, dy=p.y-center.y;
-      s+=Math.sqrt(dx*dx+dy*dy);
+      const p = kp[ringIdx[i]];
+      const dx = p.x-center.x, dy = p.y-center.y;
+      s += Math.sqrt(dx*dx+dy*dy);
     }
     return (s/ringIdx.length)/vScale;
   }
 
   function extractFeatures(kp, outBuf) {
-    const vW = videoEl.videoWidth  || 640;
-    const vH = videoEl.videoHeight || 480;
-    // FIX ET-1: normalise by sqrt(vW*vH) so the ratio is aspect-independent
+    const vW = (videoEl && videoEl.videoWidth)  || 640;
+    const vH = (videoEl && videoEl.videoHeight) || 480;
     const vScale = Math.sqrt(vW * vH);
 
-    const lc=kp[IRIS_IDX.L_CENTER], rc=kp[IRIS_IDX.R_CENTER];
+    const lc = kp[IRIS_IDX.L_CENTER], rc = kp[IRIS_IDX.R_CENTER];
     const lAx=(kp[EYE_CORNERS.L_inner].x+kp[EYE_CORNERS.L_outer].x)*0.5;
     const lAy=(kp[EYE_CORNERS.L_inner].y+kp[EYE_CORNERS.L_outer].y)*0.5;
     const rAx=(kp[EYE_CORNERS.R_inner].x+kp[EYE_CORNERS.R_outer].x)*0.5;
@@ -286,23 +245,38 @@ const EyeTracker = (() => {
     return outBuf;
   }
 
-  function scoreFrameQuality(kp) {
-    if (!kp || kp.length < 478) return 0;
-    let irisConf = 0;
-    const irisIndices = [468,469,470,471,472,473,474,475,476,477];
-    for (const idx of irisIndices) {
-      if (kp[idx] && kp[idx].z) irisConf += (kp[idx].z || 0);
-    }
-    irisConf = Math.min(1, irisConf / irisIndices.length);
-    const noseTip = kp[1], leftEar = kp[234], rightEar = kp[454];
-    if (!noseTip || !leftEar || !rightEar) return 0;
-    const yaw = Math.abs(noseTip.x - (leftEar.x + rightEar.x) / 2) / (rightEar.x - leftEar.x);
-    const pitch = Math.abs(noseTip.y - (leftEar.y + rightEar.y) / 2) / Math.abs(leftEar.y - rightEar.y);
-    const poseScore = Math.max(0, 1 - (Math.abs(yaw) + Math.abs(pitch)) * 0.5);
-    return irisConf * 0.7 + poseScore * 0.3;
+  // v12's quality score summed raw landmark z values, which are signed and
+  // unbounded, so it collapsed to ~0 for perfectly good frames. This version
+  // scores what actually matters for a webcam gaze model: how much of the
+  // frame the face fills, and how frontal the head is.
+  function faceGeometry(kp) {
+    const vW = (videoEl && videoEl.videoWidth)  || 640;
+    const vH = (videoEl && videoEl.videoHeight) || 480;
+    const L = kp[FACE_EDGE.LEFT], R = kp[FACE_EDGE.RIGHT];
+    const T = kp[FACE_EDGE.TOP],  B = kp[FACE_EDGE.CHIN], N = kp[FACE_EDGE.NOSE];
+    if (!L || !R || !T || !B || !N) return null;
+
+    const faceW = Math.abs(R.x - L.x) || 1;
+    const faceH = Math.abs(B.y - T.y) || 1;
+    const cx = (L.x + R.x) / 2;
+    const cy = (T.y + B.y) / 2;
+    const yaw   = (N.x - cx) / faceW;          // 0 = frontal
+    const pitch = (N.y - (L.y + R.y) / 2) / faceH;
+
+    const sizeRatio = faceW / vW;              // ideal ~0.35-0.45
+    const sizeScore = sizeRatio < 0.12 ? 0 : Math.max(0, 1 - Math.abs(sizeRatio - 0.40) / 0.40);
+    const poseScore = Math.max(0, 1 - (Math.abs(yaw) * 2.2 + Math.abs(pitch) * 1.6));
+
+    return {
+      // normalised to the video frame, origin top-left, NOT mirrored
+      cx: cx / vW, cy: cy / vH,
+      w: faceW / vW, h: faceH / vH,
+      sizeRatio, yaw, pitch, sizeScore, poseScore,
+      quality: Math.max(0, Math.min(1, 0.45 * sizeScore + 0.55 * poseScore)),
+    };
   }
 
-  // ── Weighted Ridge Regression ─────────────────────────────────
+  // ── Weighted ridge regression ────────────────────────────────
   function fitRidge(samples, targetKey, lambda) {
     const n=samples.length, d=samples[0].features.length+1;
     const XtWX=Array.from({length:d},()=>new Float64Array(d));
@@ -328,22 +302,21 @@ const EyeTracker = (() => {
   }
 
   function ridgePredict(coef, features) {
-    // features.length is 12 (fixed). Tight loop, no allocations.
     let v=0;
     for (let i=0;i<12;i++) v+=coef[i]*features[i];
     return v+coef[12];
   }
 
-  function calcRMS(samples) {
+  function fitRms(samples) {
     let sse=0, wSum=0;
     for (const s of samples) {
       const px=ridgePredict(modelX,s.features), py=ridgePredict(modelY,s.features);
       sse+=s.weight*((px-s.sx)**2+(py-s.sy)**2); wSum+=s.weight;
     }
-    return Math.sqrt(sse/wSum);
+    return wSum > 0 ? Math.sqrt(sse/wSum) : NaN;
   }
 
-  // ── Motion metrics ────────────────────────────────────────────
+  // ── Motion metrics ───────────────────────────────────────────
   function updateMotion(gx, gy, ts) {
     if (prevGaze && prevTime) {
       const dt=(ts-prevTime)/1000;
@@ -360,174 +333,10 @@ const EyeTracker = (() => {
     }
   }
 
-  // ── Calibration grid (33 points) ─────────────────────────────
-  function buildGrid() {
-    const pad=55, innerPad=140;
-    calibPoints=[];
-    const bx=[pad, W()*0.33, W()*0.67, W()-pad];
-    const by=[pad, H()*0.33, H()*0.67, H()-pad];
-    for (const x of bx) calibPoints.push({sx:x, sy:pad});
-    for (let i=1;i<by.length;i++) calibPoints.push({sx:W()-pad, sy:by[i]});
-    for (let i=bx.length-2;i>=0;i--) calibPoints.push({sx:bx[i], sy:H()-pad});
-    for (let i=by.length-2;i>=1;i--) calibPoints.push({sx:pad, sy:by[i]});
-    const ix=[innerPad, W()/2, W()-innerPad], iy=[innerPad, H()/2, H()-innerPad];
-    for (const {c,r} of [{c:0,r:0},{c:1,r:0},{c:2,r:0},{c:2,r:1},{c:2,r:2},{c:1,r:2},{c:0,r:2},{c:0,r:1}])
-      calibPoints.push({sx:ix[c], sy:iy[r]});
-    const cx=W()/2, cy=H()/2;
-    calibPoints.push({sx:cx, sy:(innerPad+cy)/2});
-    calibPoints.push({sx:(W()-innerPad+cx)/2, sy:cy});
-    calibPoints.push({sx:cx, sy:(H()-innerPad+cy)/2});
-    calibPoints.push({sx:(innerPad+cx)/2, sy:cy});
-    calibPoints.push({sx:cx, sy:cy});
-  }
-
-  function moveDot(x, y) {
-    calDot.classList.remove('hidden','shrink');
-    calDot.style.position='fixed';
-    calDot.style.left = x+'px';
-    calDot.style.top  = y+'px';
-    calDot.style.transform='translate(-50%,-50%)';
-    calDot.style.display='block';
-  }
-  function hideDotEl() {
-    calDot.classList.add('hidden');
-    calDot.style.display='none';
-  }
-
-  let _spaceHint = null;
-  function ensureSpaceHint() {
-    if (_spaceHint) return;
-    _spaceHint = document.createElement('div');
-    _spaceHint.style.cssText=`
-      position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:3000;
-      font-family:var(--mono,monospace);font-size:11px;letter-spacing:.18em;
-      text-transform:uppercase;color:#5a6a88;
-      background:rgba(11,15,24,.82);border:1px solid #1a2236;
-      padding:8px 20px;border-radius:2px;backdrop-filter:blur(8px);
-      display:none;`;
-    _spaceHint.innerHTML='<kbd style="border:1px solid #5a6a88;padding:2px 8px;border-radius:3px;">SPACE</kbd>&nbsp;&mdash; look at dot, then press to capture';
-    document.body.appendChild(_spaceHint);
-  }
-  function showSpaceHint(v) {
-    ensureSpaceHint();
-    _spaceHint.style.display = v ? 'block' : 'none';
-  }
-
-  function setCalProgress(done, total) {
-    if (!calProg) return;
-    calProg.innerHTML = `<span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5a6a88;">Point ${done}&thinsp;/&thinsp;${total}</span>`;
-  }
-
-  function waitForSpace() {
-    return new Promise(resolve => {
-      const h = e => { if (e.code==='Space') { e.preventDefault(); window.removeEventListener('keydown',h); resolve(); } };
-      window.addEventListener('keydown', h);
-    });
-  }
-
-  async function captureFeatureFrame() {
-    for (let attempt=0; attempt<5; attempt++) {
-      try {
-        const faces = await detector.estimateFaces(videoEl, {flipHorizontal:false});
-        if (faces && faces.length>0 && faces[0].keypoints.length>=478) {
-          const kp = faces[0].keypoints;
-          const quality = scoreFrameQuality(kp);
-          const tmp = new Float64Array(12);
-          extractFeatures(kp, tmp);
-          return { features: Array.from(tmp), quality };
-        }
-      } catch (err) {
-        tdiag('detector.estimateFaces calibration frame failed', { name: err.name, message: err.message, attempt: attempt + 1 });
-      }
-      await sleep(40);
-    }
-    return null;
-  }
-
-  // ── Run full calibration ──────────────────────────────────────
-  async function runCalibration() {
-    tdiag('calibration grid starting', { canvasWidth: window.innerWidth, canvasHeight: window.innerHeight, points: calibPoints.length });
-    calibData     = [];
-    isCalibrating = true;
-    _calibrated   = false;
-
-    if (alignScreen)   alignScreen.style.display='none';
-    if (headCalScreen) headCalScreen.style.display='none';
-    if (calScreen)     calScreen.style.display='flex';
-    hideDotEl();
-    showSpaceHint(true);
-
-    for (let i=0; i<calibPoints.length; i++) {
-      setCalProgress(i+1, calibPoints.length);
-      const pt = calibPoints[i];
-      moveDot(pt.sx, pt.sy);
-      await waitForSpace();
-      await sleep(100);
-
-      let captured=0;
-      for (let s=0; s<CFG.CALIB_SAMPLES; s++) {
-        calDot.classList.add('shrink');
-        const result = await captureFeatureFrame();
-        if (result) {
-          const quality = Math.max(0.3, result.quality);
-          calibData.push({ features: result.features, sx: pt.sx, sy: pt.sy, weight: quality * 1.2 });
-          captured++;
-        }
-        await sleep(CFG.CALIB_SAMPLE_INTERVAL);
-        calDot.classList.remove('shrink');
-      }
-      if (captured < CFG.CALIB_SAMPLES * 0.7) {
-        for (let r=0; r<4; r++) {
-          const result = await captureFeatureFrame();
-          if (result) {
-            const quality = Math.max(0.3, result.quality);
-            calibData.push({ features: result.features, sx: pt.sx, sy: pt.sy, weight: quality * 0.8 });
-          }
-          await sleep(CFG.CALIB_SAMPLE_INTERVAL);
-        }
-      }
-    }
-
-    hideDotEl();
-    showSpaceHint(false);
-    setCalProgress(calibPoints.length, calibPoints.length);
-
-    // FIX ET-5: need ≥20 samples for 13-D ridge regression
-    if (calibData.length<20)
-      throw new Error(`Only ${calibData.length} valid samples captured (need ≥20). Ensure your face is well-lit.`);
-
-    modelX    = fitRidge(calibData, 'sx', CFG.RIDGE_LAMBDA);
-    modelY    = fitRidge(calibData, 'sy', CFG.RIDGE_LAMBDA);
-    _calError = calcRMS(calibData);
-    isCalibrating = false;
-    _calibrated   = true;
-    KF.inited     = false;
-
-    console.log(`[EyeTracker v12] Cal done. ${calibPoints.length} pts, ${calibData.length} samples. RMS: ${_calError.toFixed(2)} px`);
-
-    if (calScreen) calScreen.style.display='none';
-    if (cursor)    cursor.style.display='block';
-    if (blinkLed)  blinkLed.style.display='none';
-    if (hud)       hud.style.display='flex';
-    if (recalBtn)  recalBtn.style.display='block';
-    if (he)        he.textContent = _calError.toFixed(1)+' px';
-    if (flash)     { flash.style.opacity='1'; setTimeout(()=>flash.style.opacity='0', 350); }
-
-    if (typeof BatteryController!=='undefined' && BatteryController.onCalibrationComplete)
-      BatteryController.onCalibrationComplete();
-
-    return _calError;
-  }
-
-  // ═════════════════════════════════════════════════════════════════════════
-  // HOT PATH — zero-allocation per-frame processing
-  // ═════════════════════════════════════════════════════════════════════════
-
-  let _renderX = 0, _renderY = 0;
-
-  function processGazeSample(kp, frameStart, detectorDoneTs) {
-    const processStart = detectorDoneTs;
-
+  // ══════════════════════════════════════════════════════════════
+  // HOT PATH
+  // ══════════════════════════════════════════════════════════════
+  function processGazeSample(kp, detectorDoneTs) {
     extractFeatures(kp, _featureBuf);
     const rawX = Math.max(0, Math.min(W(), ridgePredict(modelX, _featureBuf)));
     const rawY = Math.max(0, Math.min(H(), ridgePredict(modelY, _featureBuf)));
@@ -537,20 +346,16 @@ const EyeTracker = (() => {
 
     updateMotion(gx, gy, ts);
 
-    // Smoothing toward render position
     const fpsRatio = Math.min(1.0, (_fps || 30) / 120.0);
     const adaptiveAlpha = CFG.VELOCITY_SCALE_FACTOR * fpsRatio;
     _renderX += (gx - _renderX) * adaptiveAlpha;
     _renderY += (gy - _renderY) * adaptiveAlpha;
 
-    // FIX FPS-14: throttled cursor update (~60 Hz max — display can't show faster).
-    // At 120 Hz emission, this halves cursor DOM writes.
-    if (cursor && ts - _cursorLastUpdate >= CFG.CURSOR_UPDATE_MS) {
+    const cursor = $('gaze-cursor'), ring = $('gaze-ring');
+    if (cursor && cursor.style.display !== 'none' && ts - _cursorLastUpdate >= CFG.CURSOR_UPDATE_MS) {
       _cursorLastUpdate = ts;
-      const clampX = Math.max(0, Math.min(W()-1, _renderX));
-      const clampY = Math.max(0, Math.min(H()-1, _renderY));
-      cursor.style.left = clampX + 'px';
-      cursor.style.top  = clampY + 'px';
+      cursor.style.left = Math.max(0, Math.min(W()-1, _renderX)) + 'px';
+      cursor.style.top  = Math.max(0, Math.min(H()-1, _renderY)) + 'px';
       if (ring) {
         const rs = 28 + Math.min(saccadeVel*0.1, 36);
         ring.style.width  = rs + 'px';
@@ -558,377 +363,625 @@ const EyeTracker = (() => {
       }
     }
 
-    // FIX FPS-12: mutate _latestGaze IN PLACE — zero allocation per emission
     _gazeSeq++;
     _latestGaze.x          = gx;
     _latestGaze.y          = gy;
     _latestGaze.velocity   = saccadeVel;
     _latestGaze.isBlink    = false;
-    _latestGaze.confidence = 1;
+    _latestGaze.confidence = _lastQuality || 1;
     _latestGaze.fps        = _fps;
     _latestGaze.ts         = ts;
     _latestGaze.seq        = _gazeSeq;
 
     _processedFrames++;
     _emittedSamples++;
+    _lastEmitTs = ts;
 
-    // Per-stage latency (EWMA — no array allocations)
     const processEnd = performance.now();
-    _processMs = _processMs * (1 - LATENCY_ALPHA) + (processEnd - processStart) * LATENCY_ALPHA;
+    _processMs = _processMs * (1 - LATENCY_ALPHA) + (processEnd - detectorDoneTs) * LATENCY_ALPHA;
 
-    // Rolling FPS estimate (single capped array — fpsBuf)
     fpsBuf.push(ts);
     if (fpsBuf.length > CFG.FPS_WINDOW) fpsBuf.shift();
     if (fpsBuf.length >= 2) {
       _fps = Math.round((fpsBuf.length - 1) / ((fpsBuf[fpsBuf.length-1] - fpsBuf[0]) / 1000));
     }
 
-    // Throttled HUD updates (~5 Hz, time-based)
     if (ts - _hudLastUpdate >= CFG.HUD_UPDATE_MS) {
       _hudLastUpdate = ts;
-      if (hx)      hx.textContent      = _renderX.toFixed(0);
-      if (hy)      hy.textContent      = _renderY.toFixed(0);
-      if (hvEl)    hvEl.textContent    = saccadeVel.toFixed(1);
-      if (hfpsEl)  hfpsEl.textContent  = _fps;
-      if (htrkfpsEl) htrkfpsEl.textContent = Math.round(_actualFps || _fps);
-      if (hconfEl) hconfEl.textContent = '100%';
-      if (hstabEl) hstabEl.textContent = fixating ? 'LOCKED' : 'SEARCH';
-      if (hb)      hb.textContent      = 'OK';
+      const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+      set('hx', _renderX.toFixed(0));
+      set('hy', _renderY.toFixed(0));
+      set('hv', saccadeVel.toFixed(1));
+      set('hfps', _fps);
+      set('htrkfps', Math.round(_actualFps || _fps));
+      set('hconf', Math.round((_lastQuality || 1) * 100) + '%');
+      set('hstab', fixating ? 'LOCKED' : 'SEARCH');
+      set('hb', 'OK');
     }
 
-    // FIX FPS-15: fire listeners with cached array reference, no try-catch
-    // overhead (listeners are required to handle their own errors).
+    // Listeners must handle their own errors; one throwing listener must not
+    // take the whole sampling pipeline down for the other two tasks.
     const listenerStart = performance.now();
     const L = _listeners;
-    const n = L.length;
-    for (let i = 0; i < n; i++) {
-      L[i](_latestGaze);
+    for (let i = 0; i < L.length; i++) {
+      try { L[i](_latestGaze); }
+      catch (e) { console.warn('[EyeTracker] gaze listener threw', e); }
     }
-    const listenerEnd = performance.now();
-    _listenerMs = _listenerMs * (1 - LATENCY_ALPHA) + (listenerEnd - listenerStart) * LATENCY_ALPHA;
+    _listenerMs = _listenerMs * (1 - LATENCY_ALPHA) + (performance.now() - listenerStart) * LATENCY_ALPHA;
   }
 
-  function onVideoFrame(now, metadata) {
-    _totalFrames++;
-
+  // ── Frame loop (requestAnimationFrame driven) ────────────────
+  function frameTick() {
     if (!_running) return;
+    _rafHandle = requestAnimationFrame(frameTick);
 
-    // Schedule next frame FIRST — keeps the rVFC pipeline saturated
-    scheduleNextFrame();
-
-    if (!_calibrated || _paused) return;
-
-    if (_detectorBusy) {
-      _droppedFrames++;
-      return;
-    }
+    if (!detector || !videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0) return;
+    if (_detectorBusy) { _droppedFrames++; return; }
 
     _detectorBusy = true;
-    const frameStart = performance.now();
+    const t0 = performance.now();
 
-    detector.estimateFaces(videoEl, {flipHorizontal:false})
+    detector.estimateFaces(videoEl, { flipHorizontal:false })
       .then(faces => {
-        const detectorDoneTs = performance.now();
-        _detectorMs = _detectorMs * (1 - LATENCY_ALPHA) + (detectorDoneTs - frameStart) * LATENCY_ALPHA;
-
-        // FIX FPS-16: clear busy flag IMMEDIATELY before processing (defensive
-        // recovery if processGazeSample throws).
         _detectorBusy = false;
+        const doneTs = performance.now();
+        _lastFrameTs = doneTs;
+        _totalFrames++;
+        _detectorMs = _detectorMs * (1 - LATENCY_ALPHA) + (doneTs - t0) * LATENCY_ALPHA;
 
-        if (!_running || !_calibrated || _paused) return;
-        if (faces && faces.length > 0 && faces[0].keypoints.length >= 478) {
-          processGazeSample(faces[0].keypoints, frameStart, detectorDoneTs);
+        if (faces && faces.length > 0 && faces[0].keypoints && faces[0].keypoints.length >= 478) {
+          _lastKp      = faces[0].keypoints;
+          _lastKpTs    = doneTs;
+          _lastGeom    = faceGeometry(_lastKp);
+          _lastQuality = _lastGeom ? _lastGeom.quality : 0;
+          if (_mode === 'tracking' && _calibrated && !_paused) processGazeSample(_lastKp, doneTs);
+        } else {
+          _lastKp = null; _lastGeom = null; _lastQuality = 0;
         }
+
+        if (_previewCb) { try { _previewCb(previewStats()); } catch (_) {} }
       })
-      .catch(_err => {
+      .catch(err => {
         _detectorBusy = false;
-        if (_totalFrames <= 3 || _totalFrames % 120 === 0) tdiag('detector.estimateFaces frame rejected', { name: _err.name, message: _err.message, frame: _totalFrames });
+        _lastFrameTs = performance.now();
+        if (_totalFrames <= 3 || _totalFrames % 150 === 0) {
+          tdiag('estimateFaces rejected', { name: err && err.name, message: err && err.message });
+        }
       });
   }
 
-  function scheduleNextFrame() {
-    if (!_running) return;
-    if (_hasRVFC && videoEl && videoEl.requestVideoFrameCallback) {
-      _rvfcHandle = videoEl.requestVideoFrameCallback(onVideoFrame);
-    } else {
-      _rvfcHandle = requestAnimationFrame(t => onVideoFrame(t, null));
-    }
-  }
-
-  function startTrackingLoop() {
+  function startLoop() {
     if (_running) return;
     _running = true;
-    _hasRVFC = !!(videoEl && typeof videoEl.requestVideoFrameCallback === 'function');
-    console.log(`[EyeTracker v12] Tracking loop started (rVFC=${_hasRVFC})`);
-    scheduleNextFrame();
+    _lastFrameTs = performance.now();
+    _rafHandle = requestAnimationFrame(frameTick);
+    if (!_watchdog) _watchdog = setInterval(watchdogTick, 1000);
+    tdiag('frame loop started', { mode: _mode });
   }
 
-  function stopTrackingLoop() {
+  function stopLoop() {
     _running = false;
-    if (_rvfcHandle != null) {
-      if (_hasRVFC && videoEl && videoEl.cancelVideoFrameCallback) {
-        try { videoEl.cancelVideoFrameCallback(_rvfcHandle); } catch(_) {}
-      } else {
-        try { cancelAnimationFrame(_rvfcHandle); } catch(_) {}
-      }
-      _rvfcHandle = null;
-    }
+    if (_rafHandle != null) { try { cancelAnimationFrame(_rafHandle); } catch (_) {} _rafHandle = null; }
+    if (_watchdog) { clearInterval(_watchdog); _watchdog = null; }
     _detectorBusy = false;
   }
 
-  // ── Alignment / instructions screen ──────────────────────────
-  function showAlignmentScreen() {
-    if (!alignScreen) return;
-    alignScreen.innerHTML = `
-      <div style="max-width:480px;text-align:center;padding:32px 24px;">
-        <h2 style="font-family:var(--mono,'Space Mono',monospace);font-size:20px;font-weight:700;
-                   color:#e8eaf0;margin-bottom:12px;letter-spacing:.06em;">Eye Tracker Ready</h2>
-        <p style="font-size:14px;color:#8b909e;line-height:1.65;margin-bottom:20px;">
-          A <strong style="color:#00e5ff;">33-point calibration</strong> will guide you around the screen.<br>
-          Look at each dot, then press
-          <kbd style="border:1px solid #5a6a88;padding:2px 8px;border-radius:3px;
-               font-family:var(--mono,monospace);">SPACE</kbd> to capture.<br><br>
-          Sit at arm's length &nbsp;·&nbsp; Keep your head still &nbsp;·&nbsp; Move only your eyes.
-        </p>
-        <p style="font-size:12px;color:#5a6a88;margin-bottom:28px;">
-          Ensure your face is well-lit and centred in front of the camera.
-        </p>
-        <div id="_nt_align_preview" style="position:relative;width:min(420px,82vw);aspect-ratio:4/3;margin:0 auto 24px;overflow:hidden;background:#000;border:1px solid #26324a;border-radius:6px;">
-          <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#5a6a88;font-size:12px;z-index:0;">Camera preview unavailable</span>
-        </div>
-        <button id="_nt_start_cal_btn" style="
-          padding:12px 28px;
-          font-family:var(--mono,'Space Mono',monospace);
-          font-size:13px;text-transform:uppercase;letter-spacing:.14em;
-          border-radius:4px;border:1px solid #00e5ff;
-          background:transparent;color:#00e5ff;cursor:pointer;transition:.2s;">
-          Start Calibration
-        </button>
-      </div>`;
-    alignScreen.style.cssText='position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--bg,#04060a);z-index:2000;';
-
-    const preview = document.getElementById('_nt_align_preview');
-    if (videoEl && preview) {
-      videoEl.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);z-index:1;';
-      preview.appendChild(videoEl);
-    }
-
-    const btn = document.getElementById('_nt_start_cal_btn');
-    btn.addEventListener('mouseover', () => { btn.style.background='#00e5ff'; btn.style.color='#04060a'; });
-    btn.addEventListener('mouseout',  () => { btn.style.background='transparent'; btn.style.color='#00e5ff'; });
-    btn.addEventListener('click', async () => {
-      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
-      alignScreen.style.display='none';
-      if (videoEl) {
-        videoEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:320px;height:240px;pointer-events:none;z-index:-1;';
-        document.body.appendChild(videoEl);
-      }
-      buildGrid();
-      try {
-        await runCalibration();
-        startTrackingLoop();
-      } catch(err) {
-        isCalibrating = false;
-        hideDotEl();
-        showSpaceHint(false);
-        console.error('[EyeTracker v12] Calibration error:', err);
-        alert('Calibration failed: ' + err.message + '\nPlease try again.');
-        showAlignmentScreen();
-      }
-    });
+  // A hung estimateFaces promise (WebGL context loss, tab throttling, a
+  // camera track that went "muted") used to silently end the session: the
+  // busy flag stayed true forever and no further frame was ever processed.
+  function watchdogTick() {
+    if (!_running || document.hidden) return;
+    const since = performance.now() - _lastFrameTs;
+    if (since < CFG.STALL_MS) return;
+    tdiag('frame loop stalled — recovering', { sinceMs: Math.round(since), mode: _mode });
+    _detectorBusy = false;
+    if (videoEl && videoEl.paused) { videoEl.play().catch(() => {}); }
+    if (_rafHandle != null) { try { cancelAnimationFrame(_rafHandle); } catch (_) {} }
+    _lastFrameTs = performance.now();
+    _rafHandle = requestAnimationFrame(frameTick);
   }
 
-  // ── Deferred init ────────────────────────────────────────────
-  let _started = false;
-  let _startPromise = null;
+  // ══════════════════════════════════════════════════════════════
+  // CAMERA
+  // ══════════════════════════════════════════════════════════════
+  async function enumerateCameras() {
+    let devices = [];
+    try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (_) { return []; }
+    return devices
+      .filter(d => d.kind === 'videoinput')
+      .map((d, i) => ({
+        deviceId: d.deviceId,
+        label: d.label || ('Camera ' + (i + 1)),
+        isIR: IR_LABEL_RE.test(d.label || ''),
+      }));
+  }
 
-  // FIX FPS-11: multi-constraint camera fallback. Tries each set until one works.
-  async function selectAndInitializeCamera() {
-    const handoffStream = window._handoffMediaStream;
-    if (streamIsLive(handoffStream)) {
-      tdiag('reusing live preview MediaStream for EyeTracker', { tracks: handoffStream.getTracks().map(track => ({ kind: track.kind, state: track.readyState })) });
-      window._handoffMediaStream = null;
-      return handoffStream;
-    }
-    tdiag('no reusable preview stream; enumerating cameras');
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoDevices = devices.filter(d => d.kind === 'videoinput');
+  async function pickDefaultCamera() {
+    const saved = (() => { try { return localStorage.getItem(CAMERA_PREF_KEY); } catch (_) { return null; } })();
+    const cams = await enumerateCameras();
+    if (saved && cams.some(c => c.deviceId === saved)) return saved;
+    const rgb = cams.find(c => !c.isIR);
+    return rgb ? rgb.deviceId : (cams[0] ? cams[0].deviceId : null);
+  }
 
-    tdiag(`found ${videoDevices.length} video device(s)`);
-    videoDevices.forEach((d, i) => console.log(`  [${i}] ${d.label || 'Unknown'}`));
-
-    let selectedDeviceId = null;
-    const monoPatterns = ['monochrome', '120fps', 'mono', 'grayscale', 'ir', 'infrared'];
-    for (const pattern of monoPatterns) {
-      const device = videoDevices.find(d => d.label.toLowerCase().includes(pattern));
-      if (device) {
-        console.log(`[EyeTracker v12] ✓ Preferred high-FPS camera: ${device.label}`);
-        selectedDeviceId = device.deviceId;
-        break;
-      }
-    }
-    if (!selectedDeviceId && videoDevices.length > 0) {
-      selectedDeviceId = videoDevices[0].deviceId;
-      console.log(`[EyeTracker v12] ℹ Falling back to first camera: ${videoDevices[0].label || 'Unknown'}`);
-    }
-
-    // Try constraint sets in order until one succeeds
-    let stream = null;
-    let usedSet = null;
+  async function openStream(deviceId) {
+    let lastErr = null;
     for (const cs of CAMERA_CONSTRAINT_SETS) {
-      const constraints = {
-        video: { ...cs.video, facingMode: 'user' },
-        audio: false,
-      };
-      if (selectedDeviceId) constraints.video.deviceId = { exact: selectedDeviceId };
-
+      const video = Object.assign({ facingMode: 'user' }, cs.video);
+      if (deviceId) { video.deviceId = { exact: deviceId }; delete video.facingMode; }
       try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        usedSet = cs;
-        console.log(`[EyeTracker v12] ✓ Camera opened with constraint set: ${cs.name}`);
-        break;
+        const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+        _requestedFps = (cs.video.frameRate && cs.video.frameRate.ideal) || 30;
+        tdiag('camera opened', { constraintSet: cs.name, deviceId: deviceId || '(default)' });
+        return stream;
       } catch (err) {
-        tdiag(`camera constraint "${cs.name}" failed; trying fallback`, { name: err.name, message: err.message });
-        console.warn(`[EyeTracker v12] Constraint set "${cs.name}" failed: ${err.name}`);
+        lastErr = err;
+        tdiag('camera constraint failed', { set: cs.name, name: err.name });
+        if (err.name === 'NotAllowedError' || err.name === 'SecurityError') throw err;
       }
     }
-    if (!stream) throw new Error('All camera constraint sets failed.');
-
-    _requestedFps = (usedSet && usedSet.video.frameRate && usedSet.video.frameRate.ideal) || 60;
-    const videoTracks = stream.getVideoTracks();
-    if (videoTracks.length > 0) {
-      videoTrack = videoTracks[0];
-      const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
-      _actualFps = settings.frameRate || 0;
-      _cameraFps = _actualFps;
-      _cameraResolution = `${settings.width}×${settings.height}`;
-
-      console.log(`[EyeTracker v12] Camera initialized:`);
-      console.log(`  Requested FPS: ${_requestedFps}`);
-      console.log(`  Actual FPS:    ${_actualFps}`);
-      console.log(`  Resolution:    ${_cameraResolution}`);
-
-      // Diagnostic — print full capabilities so user can see what camera supports
-      if (videoTrack.getCapabilities) {
-        try {
-          const caps = videoTrack.getCapabilities();
-          console.log(`[EyeTracker v12] Camera capabilities:`, {
-            width:     caps.width,
-            height:    caps.height,
-            frameRate: caps.frameRate,
-          });
-        } catch (_) {}
-      }
-
-      if (_actualFps < CFG.TARGET_FPS * 0.8) {
-        console.warn(`[EyeTracker v12] ⚠ Actual FPS (${_actualFps}) lower than target (${CFG.TARGET_FPS}).`);
-        console.warn(`    The camera may not support ${CFG.TARGET_FPS} FPS at ${_cameraResolution}.`);
-        if (typeof BatteryController !== 'undefined' && BatteryController.onCameraWarning) {
-          BatteryController.onCameraWarning(`Camera FPS: ${_actualFps.toFixed(1)} (target: ${CFG.TARGET_FPS})`);
-        }
-      }
-    }
-
-    videoStream = stream;
-    return stream;
+    throw lastErr || new Error('No camera could be opened.');
   }
 
-  window._startEyeTrackerNow = async function() {
+  function adoptStream(stream) {
+    videoStream = stream;
+    const tracks = stream.getVideoTracks();
+    if (tracks.length) {
+      videoTrack = tracks[0];
+      const s = videoTrack.getSettings ? videoTrack.getSettings() : {};
+      _actualFps = s.frameRate || 0;
+      _cameraFps = _actualFps;
+      _cameraResolution = (s.width || '?') + '\u00d7' + (s.height || '?');
+      try { localStorage.setItem(CAMERA_PREF_KEY, s.deviceId || ''); } catch (_) {}
+      tdiag('camera settings', { fps: _actualFps, resolution: _cameraResolution, label: videoTrack.label });
+    }
+  }
+
+  async function switchCamera(deviceId) {
+    if (!videoEl) return false;
+    const old = videoStream;
+    const stream = await openStream(deviceId);
+    videoEl.srcObject = stream;
+    await videoEl.play().catch(() => {});
+    if (old) old.getTracks().forEach(t => t.stop());
+    adoptStream(stream);
+    KF.inited = false;
+    return true;
+  }
+
+  function parkVideo() {
+    if (!videoEl) return;
+    // Kept in the layout (3x3 px, near-invisible) rather than at left:-9999px:
+    // browsers de-prioritise decoding for elements they consider off-screen.
+    videoEl.style.cssText =
+      'position:fixed;left:2px;bottom:2px;width:3px;height:3px;opacity:0.02;' +
+      'pointer-events:none;z-index:0;object-fit:cover;';
+    document.body.appendChild(videoEl);
+    videoEl.play().catch(() => {});
+  }
+
+  // ── Startup ──────────────────────────────────────────────────
+  async function ensureStarted() {
     if (_startPromise) return _startPromise;
-    _started = true;
     _startPromise = (async () => {
-    tdiag('EyeTracker startup begin');
+      tdiag('EyeTracker startup begin');
 
-    if (headCalScreen) headCalScreen.style.display='none';
+      const handoff = window._handoffMediaStream;
+      let stream = null;
+      if (handoff && handoff.getVideoTracks && handoff.getVideoTracks().some(t => t.readyState === 'live')) {
+        tdiag('reusing handed-off preview stream');
+        stream = handoff;
+        window._handoffMediaStream = null;
+      } else {
+        const deviceId = await pickDefaultCamera();
+        stream = await openStream(deviceId);
+      }
+      adoptStream(stream);
 
-    try {
-      const stream = await selectAndInitializeCamera();
-      tdiag('EyeTracker camera acquired', { liveTracks: stream.getTracks().filter(track => track.readyState === 'live').length });
-
-      // FIX FPS-17: video element OFFSCREEN-VISIBLE (not 1×1 invisible).
-      // Chromium throttles requestVideoFrameCallback for 1×1 invisible video
-      // elements. Positioning offscreen at a real 320×240 size keeps the
-      // compositor active without using viewport space.
       videoEl = document.createElement('video');
       videoEl.setAttribute('autoplay', '');
       videoEl.setAttribute('playsinline', '');
+      videoEl.setAttribute('muted', '');
       videoEl.muted = true;
-      videoEl.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:320px;height:240px;pointer-events:none;z-index:-1;';
       videoEl.srcObject = stream;
-      document.body.appendChild(videoEl);
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('EyeTracker video did not become ready within 10 seconds')), 10000);
-        videoEl.addEventListener('loadeddata', () => { clearTimeout(timer); resolve(); }, {once:true});
-        videoEl.addEventListener('error', () => { clearTimeout(timer); reject(new Error('EyeTracker video element failed to load')); }, {once:true});
-      });
-      tdiag('EyeTracker video ready', { width: videoEl.videoWidth, height: videoEl.videoHeight });
+      parkVideo();
 
-      // TF backend — WebGL for GPU inference
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Camera did not produce a frame within 12 seconds.')), 12000);
+        const ok = () => { clearTimeout(timer); resolve(); };
+        if (videoEl.readyState >= 2) return ok();
+        videoEl.addEventListener('loadeddata', ok, { once:true });
+        videoEl.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Video element failed to load the camera stream.')); }, { once:true });
+      });
+      await videoEl.play().catch(() => {});
+      tdiag('video ready', { width: videoEl.videoWidth, height: videoEl.videoHeight });
+
       await tf.setBackend('webgl');
       await tf.ready();
       tdiag('TensorFlow WebGL backend ready');
 
-      // FaceMesh detector with iris refinement (required for 12-D features)
       detector = await faceLandmarksDetection.createDetector(
         faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-        {
-          runtime         : 'mediapipe',
-          refineLandmarks : true,
-          solutionPath    : CFG.SOLUTION_PATH,
-          maxFaces        : 1,
-        }
+        { runtime:'mediapipe', refineLandmarks:true, solutionPath:CFG.SOLUTION_PATH, maxFaces:1 }
       );
-      tdiag('FaceLandmarksDetector initialized');
-
-      // Warm-up pass
-      await detector.estimateFaces(videoEl, {flipHorizontal:false});
-      tdiag('FaceLandmarksDetector warm-up completed');
+      await detector.estimateFaces(videoEl, { flipHorizontal:false });   // warm-up
+      tdiag('FaceMesh detector ready');
 
       _renderX = W()/2; _renderY = H()/2;
+      _started = true;
+      startLoop();
+    })();
 
-      _hasRVFC = typeof videoEl.requestVideoFrameCallback === 'function';
-      console.log(`[EyeTracker v12] requestVideoFrameCallback support: ${_hasRVFC}`);
-      if (!_hasRVFC) {
-        console.warn(`[EyeTracker v12] ⚠ rVFC not supported — falling back to rAF (60 FPS cap).`);
-      }
-
-    } catch(err) {
+    try {
+      await _startPromise;
+    } catch (err) {
       tdiag('EyeTracker startup failed', { name: err.name, message: err.message });
-      console.error('[EyeTracker v12] Init error:', err);
-      stopTrackingLoop();
-      if (detector && typeof detector.dispose === 'function') { try { detector.dispose(); } catch (_) {} }
-      detector = null;
-      if (videoEl) { try { videoEl.pause(); } catch (_) {} videoEl.srcObject = null; videoEl.remove(); videoEl = null; }
-      if (videoStream && !streamIsLive(window._handoffMediaStream)) videoStream.getTracks().forEach(track => track.stop());
-      videoStream = null;
-      window.Module = undefined;
-      _started = false;
+      teardown();
       _startPromise = null;
-      alert('Eye tracker failed to initialise: ' + err.message);
       throw err;
     }
-    })();
     return _startPromise;
-  };
+  }
 
-  // ── Public API ────────────────────────────────────────────────
-  return {
-    onGaze(fn)            { _listeners.push(fn); },
-    offGaze(fn)           { _listeners = _listeners.filter(l=>l!==fn); },
-    // Spread copy so external code can't mutate our internal object
-    getGaze()             { return {..._latestGaze}; },
+  function teardown() {
+    stopLoop();
+    if (detector && typeof detector.dispose === 'function') { try { detector.dispose(); } catch (_) {} }
+    detector = null;
+    if (videoEl) { try { videoEl.pause(); } catch (_) {} videoEl.srcObject = null; videoEl.remove(); videoEl = null; }
+    if (videoStream) { try { videoStream.getTracks().forEach(t => t.stop()); } catch (_) {} }
+    videoStream = null; videoTrack = null;
+    _started = false;
+    _mode = 'idle';
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // PREVIEW (used by the camera-check screen)
+  // ══════════════════════════════════════════════════════════════
+  function previewStats() {
+    const fresh = _lastKp && (performance.now() - _lastKpTs) < 400;
+    return {
+      faceFound : !!fresh,
+      quality   : fresh ? _lastQuality : 0,
+      geometry  : fresh ? _lastGeom : null,
+      detectorMs: _detectorMs,
+      cameraLabel: videoTrack ? videoTrack.label : '',
+      resolution : _cameraResolution,
+      fps        : _actualFps,
+    };
+  }
+
+  async function startPreview(container, onStats) {
+    await ensureStarted();
+    _previewCb = typeof onStats === 'function' ? onStats : null;
+    if (container && videoEl) {
+      videoEl.style.cssText =
+        'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;' +
+        'transform:scaleX(-1);z-index:1;';
+      container.appendChild(videoEl);
+      await videoEl.play().catch(() => {});
+    }
+    _mode = 'preview';
+    startLoop();
+    return previewStats();
+  }
+
+  function stopPreview() {
+    _previewCb = null;
+    if (_mode === 'preview') _mode = 'idle';
+    parkVideo();
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // CALIBRATION
+  // ══════════════════════════════════════════════════════════════
+  const CAL_BG = '#0b0d12';
+
+  function calUI() {
+    const screen = $('cal-screen');
+    if (!screen) throw new Error('#cal-screen missing from the page.');
+    screen.style.cssText =
+      'position:fixed;inset:0;z-index:2600;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;background:' + CAL_BG + ';';
+
+    const header = $('cal-header');
+    if (header) header.style.display = 'none';
+
+    let panel = $('_nt_cal_panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = '_nt_cal_panel';
+      panel.style.cssText =
+        'position:fixed;left:50%;bottom:56px;transform:translateX(-50%);width:min(520px,80vw);' +
+        'text-align:center;color:#c9d2e0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;';
+      panel.innerHTML =
+        '<div id="_nt_cal_hint" style="font-size:15px;line-height:1.5;color:#e8edf5;margin-bottom:14px;min-height:22px;"></div>' +
+        '<div style="height:3px;background:#1d2430;border-radius:2px;overflow:hidden;">' +
+          '<div id="_nt_cal_bar" style="height:100%;width:0%;background:#4fd8c4;transition:width .25s ease;"></div>' +
+        '</div>' +
+        '<div id="_nt_cal_count" style="font-size:12px;color:#6e7a8c;margin-top:8px;"></div>';
+      document.body.appendChild(panel);
+    }
+    panel.style.display = 'block';
+    return panel;
+  }
+
+  function calHint(text)  { const el = $('_nt_cal_hint');  if (el) el.textContent = text; }
+  function calCount(text) { const el = $('_nt_cal_count'); if (el) el.textContent = text; }
+  function calBar(frac)   { const el = $('_nt_cal_bar');   if (el) el.style.width = Math.round(frac*100) + '%'; }
+  function hideCalUI() {
+    const panel = $('_nt_cal_panel'); if (panel) panel.style.display = 'none';
+    const screen = $('cal-screen');   if (screen) screen.style.display = 'none';
+  }
+
+  function calDotEl() {
+    const dot = $('cal-dot');
+    if (!dot) return null;
+    if (!dot._ntStyled) {
+      dot._ntStyled = true;
+      dot.innerHTML = '<span style="position:absolute;left:50%;top:50%;width:6px;height:6px;' +
+                      'margin:-3px 0 0 -3px;border-radius:50%;background:' + CAL_BG + ';"></span>';
+    }
+    dot.style.background = '#ffffff';
+    dot.style.boxShadow  = '0 0 0 4px rgba(255,255,255,.08), 0 0 22px rgba(255,255,255,.35)';
+    dot.style.transition = 'left ' + CFG.DOT_TRAVEL_MS + 'ms cubic-bezier(.22,.61,.36,1),' +
+                           ' top ' + CFG.DOT_TRAVEL_MS + 'ms cubic-bezier(.22,.61,.36,1),' +
+                           ' width .18s, height .18s, opacity .25s';
+    return dot;
+  }
+
+  function moveDot(x, y) {
+    const dot = calDotEl(); if (!dot) return;
+    dot.classList.remove('hidden');
+    dot.style.position = 'fixed';
+    dot.style.display  = 'block';
+    dot.style.left     = x + 'px';
+    dot.style.top      = y + 'px';
+    dot.style.transform = 'translate(-50%,-50%)';
+  }
+  function hideDot() {
+    const dot = $('cal-dot');
+    if (dot) { dot.classList.add('hidden'); dot.style.display = 'none'; }
+  }
+
+  function buildGrid(cols, rows) {
+    const padX = Math.max(64, W() * 0.06);
+    const padY = Math.max(64, H() * 0.09);
+    const grid = [];
+    for (let r = 0; r < rows; r++) {
+      const row = [];
+      for (let c = 0; c < cols; c++) {
+        row.push({
+          sx: padX + (W() - 2*padX) * (cols === 1 ? 0.5 : c/(cols-1)),
+          sy: padY + (H() - 2*padY) * (rows === 1 ? 0.5 : r/(rows-1)),
+        });
+      }
+      grid.push(...(r % 2 ? row.reverse() : row));   // serpentine: shorter travel
+    }
+    return grid;
+  }
+
+  function validationPoints() {
+    const mx = W()*0.25, Mx = W()*0.75, my = H()*0.25, My = H()*0.75;
+    return [
+      { sx: W()/2, sy: H()/2 },
+      { sx: mx, sy: my }, { sx: Mx, sy: my },
+      { sx: Mx, sy: My }, { sx: mx, sy: My },
+    ].slice(0, CFG.VALIDATION_PTS);
+  }
+
+  async function waitForFace(timeoutMs) {
+    const end = performance.now() + timeoutMs;
+    while (performance.now() < end) {
+      if (_calAborted) return false;
+      if (_lastKp && performance.now() - _lastKpTs < 500 && _lastQuality >= CFG.QUALITY_MIN) return true;
+      if (!_lastKp) calHint('Looking for your face — sit centred and well lit.');
+      else if (_lastGeom && _lastGeom.sizeRatio < 0.20) calHint('Move a little closer to the screen.');
+      else if (_lastGeom && Math.abs(_lastGeom.yaw) > 0.18) calHint('Face the screen straight on.');
+      else calHint('Hold still for a moment.');
+      await nap(120);
+    }
+    return false;
+  }
+
+  // Pull samples from the loop's latest landmarks instead of issuing extra
+  // estimateFaces() calls: one inference pipeline, no contention, and every
+  // captured sample is a frame the tracker genuinely processed.
+  async function captureAtPoint(pt, out, weightScale) {
+    const dot = $('cal-dot');
+    if (dot) dot.classList.add('shrink');
+    const end = performance.now() + CFG.CAPTURE_MS;
+    let n = 0, lastTs = 0;
+    while (performance.now() < end && n < CFG.CAPTURE_TARGET) {
+      if (_calAborted) break;
+      if (_lastKp && _lastKpTs !== lastTs && (performance.now() - _lastKpTs) < 250 && _lastQuality >= CFG.QUALITY_MIN) {
+        lastTs = _lastKpTs;
+        const f = new Float64Array(12);
+        extractFeatures(_lastKp, f);
+        out.push({ features: Array.from(f), sx: pt.sx, sy: pt.sy, weight: Math.max(0.3, _lastQuality) * (weightScale || 1) });
+        n++;
+      }
+      await nap(CFG.SAMPLE_POLL_MS);
+    }
+    if (dot) dot.classList.remove('shrink');
+    return n;
+  }
+
+  function showSummary(meanErrPx, samples, points) {
+    let box = $('_nt_cal_summary');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = '_nt_cal_summary';
+      document.body.appendChild(box);
+    }
+    const quality = meanErrPx <= CFG.GOOD_RMS_PX ? 'good'
+                  : meanErrPx <= CFG.POOR_RMS_PX ? 'usable' : 'poor';
+    const tone = quality === 'good' ? '#4fd8c4' : quality === 'usable' ? '#f2a94a' : '#ef6f6f';
+    const advice = quality === 'good'
+      ? 'Tracking accuracy is within the range the feature extractor expects.'
+      : quality === 'usable'
+        ? 'Accuracy is workable but not tight. Recalibrating usually helps if the room is dim or you moved.'
+        : 'Accuracy is too loose for reliable features. Recalibrate with better lighting and a steady head.';
+
+    box.style.cssText =
+      'position:fixed;inset:0;z-index:2700;display:flex;align-items:center;justify-content:center;' +
+      'background:' + CAL_BG + ';font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#e8edf5;';
+    box.innerHTML =
+      '<div style="width:min(460px,88vw);text-align:center;">' +
+        '<div style="font-size:19px;font-weight:600;margin-bottom:10px;">Calibration finished</div>' +
+        '<div style="font-size:46px;font-weight:600;color:' + tone + ';line-height:1;">' + meanErrPx.toFixed(0) + ' px</div>' +
+        '<div style="font-size:13px;color:#8b94a6;margin:8px 0 18px;">mean gaze error across ' + CFG.VALIDATION_PTS +
+          ' check points &nbsp;·&nbsp; ' + samples + ' samples from ' + points + ' points</div>' +
+        '<div style="font-size:14px;line-height:1.6;color:#b7c0d0;margin-bottom:26px;">' + advice + '</div>' +
+        '<div style="display:flex;gap:12px;justify-content:center;">' +
+          '<button id="_nt_cal_redo" style="padding:12px 22px;border-radius:6px;border:1px solid #2a3444;' +
+            'background:transparent;color:#c9d2e0;font-size:14px;cursor:pointer;">Recalibrate</button>' +
+          '<button id="_nt_cal_go" style="padding:12px 26px;border-radius:6px;border:none;' +
+            'background:' + tone + ';color:#06201c;font-size:14px;font-weight:600;cursor:pointer;">Start the tasks</button>' +
+        '</div>' +
+      '</div>';
+
+    $('_nt_cal_redo').onclick = () => { box.style.display = 'none'; calibrate(); };
+    $('_nt_cal_go').onclick = () => {
+      box.style.display = 'none';
+      hideCalUI();
+      setCursorVisible(false);
+      if (typeof BatteryController !== 'undefined' && BatteryController.onCalibrationComplete) {
+        BatteryController.onCalibrationComplete();
+      }
+    };
+  }
+
+  async function calibrate() {
+    if (isCalibrating) return;
+    try {
+      await ensureStarted();
+    } catch (err) {
+      alert('Camera could not be started: ' + err.message);
+      return;
+    }
+
+    isCalibrating = true;
+    _calAborted   = false;
+    _calibrated   = false;
+    _mode         = 'calibrating';
+    KF.inited     = false;
+    prevGaze = null; prevTime = null; saccadeVel = 0; fixCluster = null; fixating = false;
+    _renderX = W()/2; _renderY = H()/2;
+
+    stopPreview();
+    setCursorVisible(false);
+    const hud = $('hud');      if (hud) hud.style.display = 'none';
+    const rec = $('btn-recal'); if (rec) rec.style.display = 'none';
+
+    calUI();
+    hideDot();
+    calBar(0);
+    calCount('');
+
+    try {
+      const ok = await waitForFace(CFG.FACE_WAIT_MS);
+      if (!ok) throw new Error('No face was detected. Check the camera, the lighting, and that the right camera is selected.');
+
+      const points = buildGrid(CFG.GRID_COLS, CFG.GRID_ROWS);
+      const data = [];
+      calHint('Follow the dot with your eyes. Keep your head still.');
+      await nap(900);
+
+      for (let i = 0; i < points.length; i++) {
+        if (_calAborted) throw new Error('Calibration cancelled.');
+        const pt = points[i];
+        calCount('Point ' + (i+1) + ' of ' + points.length);
+        calBar(i / points.length);
+        moveDot(pt.sx, pt.sy);
+        await nap(CFG.DOT_TRAVEL_MS + CFG.SETTLE_MS);
+
+        let got = await captureAtPoint(pt, data, 1.0);
+        if (got < CFG.MIN_PER_POINT) {
+          calHint('Hold still — capturing this point again.');
+          await nap(250);
+          got += await captureAtPoint(pt, data, 0.8);
+          calHint('Follow the dot with your eyes. Keep your head still.');
+        }
+      }
+      calBar(1);
+
+      if (data.length < CFG.MIN_TOTAL) {
+        throw new Error('Only ' + data.length + ' usable samples were captured (at least ' + CFG.MIN_TOTAL +
+                        ' are needed). Improve the lighting and keep your face centred, then try again.');
+      }
+
+      modelX = fitRidge(data, 'sx', CFG.RIDGE_LAMBDA);
+      modelY = fitRidge(data, 'sy', CFG.RIDGE_LAMBDA);
+      _calError = fitRms(data);
+      _calibrated = true;
+
+      // Held-out validation: the fit RMS always flatters itself, so measure
+      // against points the model was never trained on.
+      calHint('Quick accuracy check — keep following the dot.');
+      const vPts = validationPoints();
+      const errs = [];
+      for (let i = 0; i < vPts.length; i++) {
+        const pt = vPts[i];
+        calCount('Check ' + (i+1) + ' of ' + vPts.length);
+        moveDot(pt.sx, pt.sy);
+        await nap(CFG.DOT_TRAVEL_MS + CFG.SETTLE_MS);
+        const probe = [];
+        await captureAtPoint(pt, probe, 1.0);
+        for (const s of probe) {
+          const px = ridgePredict(modelX, s.features), py = ridgePredict(modelY, s.features);
+          errs.push(Math.hypot(px - pt.sx, py - pt.sy));
+        }
+      }
+      hideDot();
+
+      _validationError = errs.length ? errs.reduce((a,b)=>a+b,0) / errs.length : _calError;
+      _calError = Number.isFinite(_validationError) ? _validationError : _calError;
+
+      const he = $('he'); if (he) he.textContent = _calError.toFixed(1) + ' px';
+      console.log('[EyeTracker v13] calibration: ' + data.length + ' samples / ' + points.length +
+                  ' points, validation error ' + _calError.toFixed(1) + ' px');
+
+      isCalibrating = false;
+      _mode = 'tracking';
+      startLoop();
+      showSummary(_calError, data.length, points.length);
+
+    } catch (err) {
+      isCalibrating = false;
+      _calibrated = false;
+      _mode = 'idle';
+      hideDot();
+      hideCalUI();
+      console.error('[EyeTracker v13] calibration error:', err);
+      if (typeof window.reportClientError === 'function') window.reportClientError('calibration', err);
+      const retry = confirm(err.message + '\n\nTry calibrating again?');
+      if (retry) { setTimeout(calibrate, 200); }
+      else if (typeof window.TestDiag === 'function') window.TestDiag('calibration abandoned by operator');
+    }
+  }
+
+  function setCursorVisible(visible) {
+    const cursor = $('gaze-cursor');
+    if (cursor) cursor.style.display = visible ? 'block' : 'none';
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // PUBLIC API
+  // ══════════════════════════════════════════════════════════════
+  const api = {
+    onGaze(fn)  { if (typeof fn === 'function') _listeners.push(fn); },
+    offGaze(fn) { _listeners = _listeners.filter(l => l !== fn); },
+    getGaze()   { return { ..._latestGaze }; },
+
     isCalibrated()        { return _calibrated; },
-    getCalibrationError() { return _calError; },
+    getCalibrationError() { return _calError || 0; },
+    getValidationError()  { return _validationError; },
     getFPS()              { return _fps; },
-
-    // High-FPS metrics API
+    getProcessingFPS()    { return _fps; },
     getCameraFPS()        { return _cameraFps; },
     getRequestedFPS()     { return _requestedFps; },
     getActualFPS()        { return _actualFps; },
     getCameraResolution() { return _cameraResolution; },
-    getProcessingFPS()    { return _fps; },
     getDroppedFrames()    { return _droppedFrames; },
     getTotalFrames()      { return _totalFrames; },
     getProcessedFrames()  { return _processedFrames; },
@@ -936,89 +989,78 @@ const EyeTracker = (() => {
     getDetectorMs()       { return _detectorMs; },
     getProcessMs()        { return _processMs; },
     getListenerMs()       { return _listenerMs; },
-    getPerformanceStats() {
-      return {
-        cameraFps:        _cameraFps,
-        requestedFps:     _requestedFps,
-        actualFps:        _actualFps,
-        cameraResolution: _cameraResolution,
-        processingFps:    _fps,
-        totalFrames:      _totalFrames,
-        processedFrames:  _processedFrames,
-        droppedFrames:    _droppedFrames,
-        emittedSamples:   _emittedSamples,
-        dropRate:         _totalFrames > 0 ? (_droppedFrames / _totalFrames) : 0,
-        detectorMs:       _detectorMs,
-        processMs:        _processMs,
-        listenerMs:       _listenerMs,
-        cycleMs:          _detectorMs + _processMs + _listenerMs,
-        rvfcSupported:    _hasRVFC,
-      };
-    },
-    pause()               { _paused=true; },
-    resume()              { _paused=false; },
     getBlinkCount()       { return 0; },
 
+    // The single most useful guard for the "every task recorded zero rows"
+    // failure: ask before starting a task instead of finding out at the end.
+    isEmitting() {
+      return _mode === 'tracking' && _calibrated && !_paused &&
+             (performance.now() - _lastEmitTs) < 1500;
+    },
+    isFaceVisible() { return !!_lastKp && (performance.now() - _lastKpTs) < 600; },
+
+    getPerformanceStats() {
+      return {
+        mode: _mode,
+        cameraFps: _cameraFps,
+        requestedFps: _requestedFps,
+        actualFps: _actualFps,
+        cameraLabel: videoTrack ? videoTrack.label : '',
+        cameraResolution: _cameraResolution,
+        processingFps: _fps,
+        totalFrames: _totalFrames,
+        processedFrames: _processedFrames,
+        droppedFrames: _droppedFrames,
+        emittedSamples: _emittedSamples,
+        dropRate: _totalFrames > 0 ? (_droppedFrames / _totalFrames) : 0,
+        detectorMs: _detectorMs,
+        processMs: _processMs,
+        listenerMs: _listenerMs,
+        cycleMs: _detectorMs + _processMs + _listenerMs,
+        calibrationErrorPx: _calError,
+        validationErrorPx: _validationError,
+        emitting: api.isEmitting(),
+        lastEmitAgoMs: _lastEmitTs ? Math.round(performance.now() - _lastEmitTs) : null,
+      };
+    },
+
+    // preview / camera management
+    start: ensureStarted,
+    startPreview,
+    stopPreview,
+    listCameras: enumerateCameras,
+    switchCamera,
+    getVideoElement() { return videoEl; },
+    setCursorVisible,
+
+    pause()  { _paused = true; },
+    resume() { _paused = false; },
+
+    calibrate,
+    recalibrate: calibrate,
+    startDirectCalibration: calibrate,
+    abortCalibration() { _calAborted = true; },
+
     stop() {
-      stopTrackingLoop();
       _listeners = [];
       _calibrated = false;
       isCalibrating = false;
-      if (detector && typeof detector.dispose === 'function') {
-        try { detector.dispose(); } catch (_) {}
-      }
-      detector = null;
-      if (videoEl) {
-        try { videoEl.pause(); } catch (_) {}
-        videoEl.srcObject = null;
-        videoEl.remove();
-      }
-      if (videoStream) videoStream.getTracks().forEach(track => track.stop());
-      videoEl = null;
-      videoStream = null;
-      videoTrack = null;
-      _started = false;
+      _calAborted = true;
+      _previewCb = null;
+      teardown();
       _startPromise = null;
       window._handoffMediaStream = null;
     },
-
-    async startDirectCalibration() {
-      if (_startPromise) {
-        try { await _startPromise; } catch (_) {}
-      } else if (!_started && typeof window._startEyeTrackerNow === 'function') {
-        try { await window._startEyeTrackerNow(); } catch (_) {}
-      }
-      if (isCalibrating) return;
-      stopTrackingLoop();
-      _calibrated=false; KF.inited=false;
-      _renderX=W()/2; _renderY=H()/2;
-      prevGaze=null; prevTime=null; saccadeVel=0; fixCluster=null; fixating=false;
-      if (cursor)   cursor.style.display='none';
-      if (hud)      hud.style.display='none';
-      if (recalBtn) recalBtn.style.display='none';
-      showAlignmentScreen();
-    },
-
-    async recalibrate() {
-      if (_startPromise) {
-        try { await _startPromise; } catch (_) {}
-      } else if (!_started && typeof window._startEyeTrackerNow === 'function') {
-        try { await window._startEyeTrackerNow(); } catch (_) {}
-      }
-      if (isCalibrating) return;
-      stopTrackingLoop();
-      _calibrated=false; KF.inited=false;
-      _renderX=W()/2; _renderY=H()/2;
-      prevGaze=null; prevTime=null; saccadeVel=0; fixCluster=null; fixating=false;
-      if (cursor)   cursor.style.display='none';
-      if (hud)      hud.style.display='none';
-      if (recalBtn) recalBtn.style.display='none';
-      buildGrid();
-      showAlignmentScreen();
-    },
   };
 
+  return api;
 })();
 
-// ── Utility ───────────────────────────────────────────────────────────────────
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); } 
+// Deferred start hook kept for backwards compatibility with battery-controller.js
+window._startEyeTrackerNow = function () {
+  return EyeTracker.start();
+};
+
+if (typeof window.sleep !== 'function') {
+  window.sleep = function (ms) { return new Promise(r => setTimeout(r, ms)); };
+}
