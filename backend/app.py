@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime
 import io
+import re
 import base64
 import traceback
 import uuid
@@ -39,29 +40,59 @@ TEMPLATE_DIR = os.path.join(FRONTEND_DIR, 'templates')
 STATIC_DIR = FRONTEND_DIR
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, static_url_path='/')
-# CORS(app)
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# The allowlist here used to name https://naina-assessment.netlify.app while the
+# deployed frontend lives at https://naina-schizo.netlify.app. Any origin that is
+# not on this list gets no Access-Control-Allow-Origin header, the browser
+# discards the response before JS ever sees it, and fetch() rejects with
+# "TypeError: Failed to fetch" — which is exactly what /sessions, /classify and
+# /save_results were all reporting. Keep this list in sync with wherever the
+# frontend is actually served from.
+#
+# Set CORS_ORIGINS in Render to add origins without a code change:
+#   CORS_ORIGINS=https://partner.example.com,https://staging.example.com
+# supports_credentials=True means "*" is not legal here — every origin must be
+# listed explicitly (Netlify deploy previews are matched by regex below).
+_DEFAULT_ORIGINS = [
+    "https://naina-schizo.netlify.app",      # production frontend 
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+
+_extra_origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
+# Netlify branch/deploy previews: https://<hash>--naina-schizo.netlify.app
+_NETLIFY_PREVIEW_RE = re.compile(r"^https://[a-z0-9-]+--naina-schizo\.netlify\.app$")
+
+ALLOWED_ORIGINS = list(dict.fromkeys(_DEFAULT_ORIGINS + _extra_origins))
+
 CORS(
     app,
-    resources={
-        r"/*": {
-            "origins": [
-                "https://naina-assessment.netlify.app",
-                "http://localhost:8000",
-                "http://127.0.0.1:8000"
-            ]
-        }
-    },
-    supports_credentials=True
+    resources={r"/*": {"origins": ALLOWED_ORIGINS + [_NETLIFY_PREVIEW_RE]}},
+    supports_credentials=True,
+    expose_headers=["Content-Disposition"],
+    allow_headers=["Content-Type", "X-Test-Token", "X-Integration-Key", "Authorization"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
+print(f"[CORS] allowed origins: {ALLOWED_ORIGINS} (+ netlify deploy previews)")
+
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
-# CORS: restrict origins in production via the CORS_ORIGINS env var.
-# Set CORS_ORIGINS=https://your-app.vercel.app in Render dashboard.
-# Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
-# _cors_origins = os.getenv("CORS_ORIGINS", "*")
-# if _cors_origins != "*":
-#     _cors_origins = [o.strip() for o in _cors_origins.split(",")]
-# CORS(app, origins=_cors_origins)
+# A completed battery posts three raw gaze arrays plus the embedded figures.
+# Without a ceiling Flask happily buffers the whole thing into a 512 MB dyno.
+app.config["MAX_CONTENT_LENGTH"] = 48 * 1024 * 1024   # 48 MB
+
+# Cross-site XHR from the Netlify frontend can only carry the session cookie if
+# it is SameSite=None; Secure. Without this the cookie is dropped and every
+# authenticated endpoint answers 401 from a different machine than the one that
+# logged in.
+app.config.update(
+    SESSION_COOKIE_SAMESITE="None",
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+)
 
 # ── DISABLE BROWSER CACHING FOR ALL RESPONSES ──
 @app.after_request
