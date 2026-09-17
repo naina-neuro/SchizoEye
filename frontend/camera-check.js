@@ -404,10 +404,20 @@
   window.CameraCheck = { start, pause, get lastScores() { return { light: lastLight, framing: lastFraming, face: lastFace }; } };
 
   // Overwrite the inline hooks from index.html so the old dead code is inert.
-  window._initFaceAlignment = function () { return start(); };
-  window._stopCameraPreview = async function () {
-    // The stream belongs to EyeTracker now; only the analysis loop stops here.
-    pause();
-    return true;
-  };
+  // Re-asserted after parsing and after load as well: the inline block lives in
+  // the body, so if this file is ever included in <head> the inline definitions
+  // would otherwise run later and win.
+  function claimHooks() {
+    window._initFaceAlignment = function () { return start(); };
+    window._stopCameraPreview = async function () {
+      // The stream belongs to EyeTracker now; only the analysis loop stops here.
+      pause();
+      return true;
+    };
+  }
+  claimHooks();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', claimHooks);
+  }
+  window.addEventListener('load', claimHooks);
 })();

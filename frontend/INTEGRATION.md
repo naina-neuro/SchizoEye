@@ -571,3 +571,53 @@ call `EyeTracker.setCursorVisible(true)` if you want it back while debugging.
 5. Skip through a task and watch `Samples:` on the free-viewing HUD increment.
 6. `curl https://schizoeyeclassification.onrender.com/health` before saving — if that
    is slow the first time, the keep-alive is doing its job during the real run.
+
+---
+
+## 7. Post-mortem: the 955 px run (blank calibration screen)
+
+Your console shows eye-tracker v13 running, but the *old* `battery-controller.js`
+and the *old* inline camera block from `index.html` — `_stopCameraPreview begin`,
+`preview tracks stopped; waiting 300ms for OS camera lock`, `face_detection_solution`
+WebGL contexts. So sections 1 and 2 above had not been applied. That matters twice
+over: the camera still opens twice, and the lighting card still shows words.
+
+The blank screen and the 955 px error were one bug, and it was mine:
+
+- `calUI()` set `#cal-screen` to `z-index: 2600`.
+- The target was the page's own `#cal-dot`, which `index.html` styles at `z-index: 1002`.
+- 1002 < 2600, so the target rendered **behind** the calibration backdrop. The bottom
+  panel had no `z-index` at all, so it was hidden too.
+
+The participant stared at an empty dark rectangle for 20 points. The ridge fit
+therefore learned nothing, collapsed toward predicting screen centre, and validation
+measured ~half a screen width of error. `198 samples from 20 points` is a healthy
+capture rate — the sampling was fine, there was simply nothing to look at.
+
+### What changed in `eye-tracker.js`
+
+- **One owned stacking context.** Calibration now builds `#nt-cal-root` at
+  `z-index: 2147483000` containing its own backdrop, target, hint line, progress bar
+  and counter. `#cal-screen` and `#cal-dot` are explicitly hidden. Nothing about the
+  calibration surface depends on `styles.css` any more, so no page stylesheet can
+  bury it again.
+- **A real fixation target.** White disc with a dark core, moved with `transform`,
+  plus a ring that contracts over the capture window so the participant can see
+  exactly when they are being measured.
+- **Protocol around the points.** Face pre-flight with specific feedback (too far,
+  turned away, not found), a written instruction card, a 3–2–1 countdown, then the
+  20 points, then 5 held-out check points. Esc cancels.
+- **Head-translation gate.** Samples are dropped while the face centre moves more
+  than 3.5% of frame width/height, or the face size changes by more than 12%, since
+  the 12-D features encode absolute iris position and a head shift fakes a gaze shift.
+- **Per-point outlier rejection.** Median + MAD in feature space, cutoff at 3·MAD.
+  One blink out of ten samples used to drag a point noticeably.
+- **A degeneracy test instead of a mystery number.** After fitting, per-point mean
+  predictions are regressed against the true targets. If R² < 0.35 the run is
+  discarded with: *the eye features barely changed as the target moved.* That is the
+  exact signature of a target nobody could see — you would have got that message
+  instead of `955 px`. The bad model is no longer kept.
+- **A poor result now asks before proceeding** rather than offering "Start the tasks"
+  as the obvious green button.
+
+Nothing in the public API changed, so this is still a straight file swap.
