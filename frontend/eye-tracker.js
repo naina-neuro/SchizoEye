@@ -675,72 +675,102 @@ const EyeTracker = (() => {
   // CALIBRATION
   // ══════════════════════════════════════════════════════════════
   const CAL_BG = '#0b0d12';
+  const CAL_Z  = 2147483000;   // above #cal-screen (2600), #cal-dot (1002), Plotly, modals
+
+  // The calibration surface is built and owned here, in one stacking context.
+  // The previous version reused the page's #cal-dot (z-index 1002 from
+  // styles.css) on top of #cal-screen (z-index 2600), so the target rendered
+  // BEHIND the backdrop: the participant saw a blank dark screen, stared at
+  // nothing for 20 points, and the fit came out at ~950 px error. Nothing here
+  // depends on styles.css any more.
+  let calRoot = null, calTarget = null, calRing = null;
 
   function calUI() {
-    const screen = $('cal-screen');
-    if (!screen) throw new Error('#cal-screen missing from the page.');
-    screen.style.cssText =
-      'position:fixed;inset:0;z-index:2600;display:flex;flex-direction:column;' +
-      'align-items:center;justify-content:center;background:' + CAL_BG + ';';
+    // Get the page's own calibration furniture out of the way entirely.
+    const legacyScreen = $('cal-screen');
+    if (legacyScreen) legacyScreen.style.display = 'none';
+    const legacyDot = $('cal-dot');
+    if (legacyDot) { legacyDot.style.display = 'none'; legacyDot.classList.add('hidden'); }
 
-    const header = $('cal-header');
-    if (header) header.style.display = 'none';
+    if (calRoot && document.body.contains(calRoot)) { calRoot.style.display = 'block'; return calRoot; }
 
-    let panel = $('_nt_cal_panel');
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = '_nt_cal_panel';
-      panel.style.cssText =
-        'position:fixed;left:50%;bottom:56px;transform:translateX(-50%);width:min(520px,80vw);' +
-        'text-align:center;color:#c9d2e0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;';
-      panel.innerHTML =
-        '<div id="_nt_cal_hint" style="font-size:15px;line-height:1.5;color:#e8edf5;margin-bottom:14px;min-height:22px;"></div>' +
+    calRoot = document.createElement('div');
+    calRoot.id = 'nt-cal-root';
+    calRoot.style.cssText =
+      'position:fixed;inset:0;z-index:' + CAL_Z + ';background:' + CAL_BG + ';' +
+      'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;cursor:none;' +
+      'user-select:none;-webkit-user-select:none;';
+    calRoot.innerHTML =
+      // fixation target: white disc, dark core, attention ring
+      '<div id="nt-cal-target" style="position:absolute;left:0;top:0;width:28px;height:28px;' +
+        'margin:-14px 0 0 -14px;border-radius:50%;background:#ffffff;opacity:0;' +
+        'box-shadow:0 0 0 3px rgba(255,255,255,.10),0 0 26px rgba(255,255,255,.30);' +
+        'transition:transform ' + CFG.DOT_TRAVEL_MS + 'ms cubic-bezier(.22,.61,.36,1),opacity .2s;">' +
+        '<span style="position:absolute;left:50%;top:50%;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;' +
+          'border-radius:50%;background:' + CAL_BG + ';"></span>' +
+        '<span id="nt-cal-ring" style="position:absolute;left:50%;top:50%;width:28px;height:28px;' +
+          'margin:-14px 0 0 -14px;border-radius:50%;border:2px solid rgba(255,255,255,.55);' +
+          'opacity:0;transition:transform .6s linear,opacity .6s linear;"></span>' +
+      '</div>' +
+      // centred message used for the pre-flight and the countdown
+      '<div id="nt-cal-center" style="position:absolute;inset:0;display:flex;align-items:center;' +
+        'justify-content:center;text-align:center;color:#e8edf5;font-size:20px;line-height:1.6;' +
+        'padding:0 8vw;"></div>' +
+      // bottom panel: hint, progress, counter
+      '<div style="position:absolute;left:50%;bottom:48px;transform:translateX(-50%);' +
+        'width:min(560px,84vw);text-align:center;">' +
+        '<div id="nt-cal-hint" style="font-size:15px;color:#c9d2e0;margin-bottom:14px;min-height:22px;"></div>' +
         '<div style="height:3px;background:#1d2430;border-radius:2px;overflow:hidden;">' +
-          '<div id="_nt_cal_bar" style="height:100%;width:0%;background:#4fd8c4;transition:width .25s ease;"></div>' +
+          '<div id="nt-cal-bar" style="height:100%;width:0%;background:#4fd8c4;transition:width .25s ease;"></div>' +
         '</div>' +
-        '<div id="_nt_cal_count" style="font-size:12px;color:#6e7a8c;margin-top:8px;"></div>';
-      document.body.appendChild(panel);
-    }
-    panel.style.display = 'block';
-    return panel;
+        '<div id="nt-cal-count" style="font-size:12px;color:#6e7a8c;margin-top:8px;"></div>' +
+      '</div>' +
+      '<div style="position:absolute;right:18px;top:16px;font-size:11px;color:#3f4857;">Esc to cancel</div>';
+
+    document.body.appendChild(calRoot);
+    calTarget = calRoot.querySelector('#nt-cal-target');
+    calRing   = calRoot.querySelector('#nt-cal-ring');
+    return calRoot;
   }
 
-  function calHint(text)  { const el = $('_nt_cal_hint');  if (el) el.textContent = text; }
-  function calCount(text) { const el = $('_nt_cal_count'); if (el) el.textContent = text; }
-  function calBar(frac)   { const el = $('_nt_cal_bar');   if (el) el.style.width = Math.round(frac*100) + '%'; }
-  function hideCalUI() {
-    const panel = $('_nt_cal_panel'); if (panel) panel.style.display = 'none';
-    const screen = $('cal-screen');   if (screen) screen.style.display = 'none';
-  }
-
-  function calDotEl() {
-    const dot = $('cal-dot');
-    if (!dot) return null;
-    if (!dot._ntStyled) {
-      dot._ntStyled = true;
-      dot.innerHTML = '<span style="position:absolute;left:50%;top:50%;width:6px;height:6px;' +
-                      'margin:-3px 0 0 -3px;border-radius:50%;background:' + CAL_BG + ';"></span>';
-    }
-    dot.style.background = '#ffffff';
-    dot.style.boxShadow  = '0 0 0 4px rgba(255,255,255,.08), 0 0 22px rgba(255,255,255,.35)';
-    dot.style.transition = 'left ' + CFG.DOT_TRAVEL_MS + 'ms cubic-bezier(.22,.61,.36,1),' +
-                           ' top ' + CFG.DOT_TRAVEL_MS + 'ms cubic-bezier(.22,.61,.36,1),' +
-                           ' width .18s, height .18s, opacity .25s';
-    return dot;
-  }
+  function calHint(text)   { const el = calRoot && calRoot.querySelector('#nt-cal-hint');  if (el) el.textContent = text; }
+  function calCount(text)  { const el = calRoot && calRoot.querySelector('#nt-cal-count'); if (el) el.textContent = text; }
+  function calBar(frac)    { const el = calRoot && calRoot.querySelector('#nt-cal-bar');   if (el) el.style.width = Math.round(frac*100) + '%'; }
+  function calCenter(html) { const el = calRoot && calRoot.querySelector('#nt-cal-center'); if (el) el.innerHTML = html || ''; }
+  function hideCalUI()     { if (calRoot) calRoot.style.display = 'none'; }
 
   function moveDot(x, y) {
-    const dot = calDotEl(); if (!dot) return;
-    dot.classList.remove('hidden');
-    dot.style.position = 'fixed';
-    dot.style.display  = 'block';
-    dot.style.left     = x + 'px';
-    dot.style.top      = y + 'px';
-    dot.style.transform = 'translate(-50%,-50%)';
+    if (!calTarget) return;
+    calTarget.style.opacity = '1';
+    calTarget.style.transform = 'translate(' + Math.round(x) + 'px,' + Math.round(y) + 'px)';
   }
-  function hideDot() {
-    const dot = $('cal-dot');
-    if (dot) { dot.classList.add('hidden'); dot.style.display = 'none'; }
+  function hideDot() { if (calTarget) calTarget.style.opacity = '0'; }
+
+  // A contracting ring during the capture window: it tells the participant
+  // exactly when their gaze is being measured, which is what keeps the samples
+  // for a point tight instead of smeared across the travel.
+  function calPulse(on) {
+    if (!calRing) return;
+    if (on) {
+      calRing.style.transition = 'none';
+      calRing.style.transform = 'scale(3.2)';
+      calRing.style.opacity = '0.9';
+      void calRing.offsetWidth;
+      calRing.style.transition = 'transform ' + CFG.CAPTURE_MS + 'ms linear, opacity ' + CFG.CAPTURE_MS + 'ms linear';
+      calRing.style.transform = 'scale(1)';
+      calRing.style.opacity = '0.15';
+    } else {
+      calRing.style.opacity = '0';
+    }
+  }
+
+  async function calCountdown() {
+    for (const n of ['3', '2', '1']) {
+      calCenter('<div style="font-size:64px;font-weight:300;color:#e8edf5;">' + n + '</div>');
+      await nap(700);
+      if (_calAborted) return;
+    }
+    calCenter('');
   }
 
   function buildGrid(cols, rows) {
@@ -786,24 +816,101 @@ const EyeTracker = (() => {
   // Pull samples from the loop's latest landmarks instead of issuing extra
   // estimateFaces() calls: one inference pipeline, no contention, and every
   // captured sample is a frame the tracker genuinely processed.
+  function medianOf(values) {
+    const s = [...values].sort((a, b) => a - b);
+    if (!s.length) return NaN;
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : 0.5 * (s[m-1] + s[m]);
+  }
+
+  // Drop samples that sit far from the point's own centre in feature space.
+  // A blink, a glance away, or a head shift inside the capture window produces
+  // exactly one or two wild samples, and with only ~10 samples per point those
+  // drag the ridge fit a long way.
+  function rejectOutliers(raw) {
+    if (raw.length < 5) return raw;
+    const med = [];
+    for (let d = 0; d < 12; d++) med.push(medianOf(raw.map(s => s.features[d])));
+    const dist = raw.map(s => {
+      let acc = 0;
+      for (let d = 0; d < 12; d++) { const e = s.features[d] - med[d]; acc += e * e; }
+      return Math.sqrt(acc);
+    });
+    const medDist = medianOf(dist);
+    const mad = medianOf(dist.map(v => Math.abs(v - medDist))) || 1e-9;
+    const cutoff = medDist + 3 * mad;
+    const kept = raw.filter((s, i) => dist[i] <= cutoff);
+    return kept.length >= Math.max(3, Math.floor(raw.length * 0.5)) ? kept : raw;
+  }
+
   async function captureAtPoint(pt, out, weightScale) {
-    const dot = $('cal-dot');
-    if (dot) dot.classList.add('shrink');
+    calPulse(true);
+    const startGeom = _lastGeom;
     const end = performance.now() + CFG.CAPTURE_MS;
-    let n = 0, lastTs = 0;
-    while (performance.now() < end && n < CFG.CAPTURE_TARGET) {
+    const raw = [];
+    let lastTs = 0, headMoved = false;
+
+    while (performance.now() < end && raw.length < CFG.CAPTURE_TARGET) {
       if (_calAborted) break;
-      if (_lastKp && _lastKpTs !== lastTs && (performance.now() - _lastKpTs) < 250 && _lastQuality >= CFG.QUALITY_MIN) {
+      const fresh = _lastKp && _lastKpTs !== lastTs && (performance.now() - _lastKpTs) < 250;
+      if (fresh && _lastQuality >= CFG.QUALITY_MIN) {
         lastTs = _lastKpTs;
+        // Head-translation gate: the 12-D features are iris position relative
+        // to the eye corners plus absolute iris position, so a head shift
+        // mid-point injects a false gaze change.
+        if (startGeom && _lastGeom) {
+          const dx = Math.abs(_lastGeom.cx - startGeom.cx);
+          const dy = Math.abs(_lastGeom.cy - startGeom.cy);
+          const ds = Math.abs(_lastGeom.sizeRatio - startGeom.sizeRatio) / Math.max(startGeom.sizeRatio, 1e-6);
+          if (dx > 0.035 || dy > 0.035 || ds > 0.12) { headMoved = true; await nap(CFG.SAMPLE_POLL_MS); continue; }
+        }
         const f = new Float64Array(12);
         extractFeatures(_lastKp, f);
-        out.push({ features: Array.from(f), sx: pt.sx, sy: pt.sy, weight: Math.max(0.3, _lastQuality) * (weightScale || 1) });
-        n++;
+        raw.push({ features: Array.from(f), sx: pt.sx, sy: pt.sy, weight: Math.max(0.3, _lastQuality) * (weightScale || 1) });
       }
       await nap(CFG.SAMPLE_POLL_MS);
     }
-    if (dot) dot.classList.remove('shrink');
-    return n;
+
+    calPulse(false);
+    const kept = rejectOutliers(raw);
+    for (const s of kept) out.push(s);
+    if (headMoved && kept.length < CFG.MIN_PER_POINT) calHint('Keep your head still — only your eyes should move.');
+    return kept.length;
+  }
+
+  // A blank screen, a participant not looking, or an unusable camera all
+  // produce the same signature: the eye features barely change from point to
+  // point, so the fit collapses toward predicting screen centre. Measuring
+  // that directly turns a mysterious "955 px" into a message that names the
+  // cause. Returns R^2 of per-point mean prediction against the true target.
+  function fitAgreement(data) {
+    const byPoint = new Map();
+    for (const s of data) {
+      const key = Math.round(s.sx) + ':' + Math.round(s.sy);
+      if (!byPoint.has(key)) byPoint.set(key, { sx: s.sx, sy: s.sy, px: [], py: [] });
+      const b = byPoint.get(key);
+      b.px.push(ridgePredict(modelX, s.features));
+      b.py.push(ridgePredict(modelY, s.features));
+    }
+    const pts = [...byPoint.values()].map(b => ({
+      sx: b.sx, sy: b.sy,
+      px: b.px.reduce((a, v) => a + v, 0) / b.px.length,
+      py: b.py.reduce((a, v) => a + v, 0) / b.py.length,
+    }));
+    if (pts.length < 4) return 1;
+    const r2 = (actual, pred) => {
+      const mean = actual.reduce((a, v) => a + v, 0) / actual.length;
+      let ssRes = 0, ssTot = 0;
+      for (let i = 0; i < actual.length; i++) {
+        ssRes += (actual[i] - pred[i]) ** 2;
+        ssTot += (actual[i] - mean) ** 2;
+      }
+      return ssTot > 1e-6 ? 1 - ssRes / ssTot : 0;
+    };
+    return Math.min(
+      r2(pts.map(p => p.sx), pts.map(p => p.px)),
+      r2(pts.map(p => p.sy), pts.map(p => p.py))
+    );
   }
 
   function showSummary(meanErrPx, samples, points) {
@@ -823,8 +930,8 @@ const EyeTracker = (() => {
         : 'Accuracy is too loose for reliable features. Recalibrate with better lighting and a steady head.';
 
     box.style.cssText =
-      'position:fixed;inset:0;z-index:2700;display:flex;align-items:center;justify-content:center;' +
-      'background:' + CAL_BG + ';font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#e8edf5;';
+      'position:fixed;inset:0;z-index:' + (CAL_Z + 1) + ';display:flex;align-items:center;justify-content:center;' +
+      'background:' + CAL_BG + ';font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8edf5;';
     box.innerHTML =
       '<div style="width:min(460px,88vw);text-align:center;">' +
         '<div style="font-size:19px;font-weight:600;margin-bottom:10px;">Calibration finished</div>' +
@@ -842,6 +949,11 @@ const EyeTracker = (() => {
 
     $('_nt_cal_redo').onclick = () => { box.style.display = 'none'; calibrate(); };
     $('_nt_cal_go').onclick = () => {
+      if (quality === 'poor' && !confirm(
+            'At ' + meanErrPx.toFixed(0) + ' px the gaze estimate is off by a large fraction of the screen. ' +
+            'The 59 features extracted from this session will not be meaningful.\n\nRun the tasks anyway?')) {
+        return;
+      }
       box.style.display = 'none';
       hideCalUI();
       setCursorVisible(false);
@@ -877,15 +989,36 @@ const EyeTracker = (() => {
     hideDot();
     calBar(0);
     calCount('');
+    calCenter('');
+
+    const escHandler = (e) => { if (e.key === 'Escape') _calAborted = true; };
+    window.addEventListener('keydown', escHandler);
 
     try {
+      calHint('Checking the camera…');
       const ok = await waitForFace(CFG.FACE_WAIT_MS);
-      if (!ok) throw new Error('No face was detected. Check the camera, the lighting, and that the right camera is selected.');
+      if (!ok) throw new Error(
+        'No face was detected in 20 seconds.\n\n' +
+        'Check that the correct camera is selected (an infrared / Windows Hello camera can never work), ' +
+        'that the light is in front of you rather than behind, and that your whole face is in view.');
+
+      calCenter(
+        '<div style="max-width:620px;">' +
+          '<div style="font-size:23px;font-weight:600;margin-bottom:18px;">Calibration</div>' +
+          '<div style="font-size:16px;color:#b7c0d0;line-height:1.8;">' +
+            'A white target will move around the screen and pause at each position.<br>' +
+            'Look straight at the centre of it every time it stops.<br>' +
+            'Move only your eyes — keep your head still and stay at the same distance.' +
+          '</div>' +
+        '</div>');
+      await nap(3400);
+      if (_calAborted) throw new Error('Calibration cancelled.');
+      await calCountdown();
+      if (_calAborted) throw new Error('Calibration cancelled.');
 
       const points = buildGrid(CFG.GRID_COLS, CFG.GRID_ROWS);
       const data = [];
-      calHint('Follow the dot with your eyes. Keep your head still.');
-      await nap(900);
+      calHint('Look at the centre of the target each time it stops.');
 
       for (let i = 0; i < points.length; i++) {
         if (_calAborted) throw new Error('Calibration cancelled.');
@@ -915,9 +1048,18 @@ const EyeTracker = (() => {
       _calError = fitRms(data);
       _calibrated = true;
 
+      const agreement = fitAgreement(data);
+      if (agreement < 0.35) {
+        throw new Error(
+          'The eye features barely changed as the target moved (R\u00b2 = ' + agreement.toFixed(2) + ').\n\n' +
+          'That means the gaze did not follow the target: either the target was not visible, the participant ' +
+          'was not looking at it, or the camera image is not usable for iris tracking.\n\n' +
+          'Nothing was learned from this run, so it has been discarded rather than saved as a bad model.');
+      }
+
       // Held-out validation: the fit RMS always flatters itself, so measure
       // against points the model was never trained on.
-      calHint('Quick accuracy check — keep following the dot.');
+      calHint('Accuracy check — keep following the target.');
       const vPts = validationPoints();
       const errs = [];
       for (let i = 0; i < vPts.length; i++) {
@@ -950,6 +1092,7 @@ const EyeTracker = (() => {
       isCalibrating = false;
       _calibrated = false;
       _mode = 'idle';
+      modelX = null; modelY = null;
       hideDot();
       hideCalUI();
       console.error('[EyeTracker v13] calibration error:', err);
@@ -957,6 +1100,8 @@ const EyeTracker = (() => {
       const retry = confirm(err.message + '\n\nTry calibrating again?');
       if (retry) { setTimeout(calibrate, 200); }
       else if (typeof window.TestDiag === 'function') window.TestDiag('calibration abandoned by operator');
+    } finally {
+      window.removeEventListener('keydown', escHandler);
     }
   }
 
