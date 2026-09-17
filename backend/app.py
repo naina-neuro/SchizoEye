@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, send_file, session
+from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import joblib
 import pandas as pd
@@ -9,7 +9,6 @@ import io
 import base64
 import traceback
 import uuid
-import gc
 
 # MongoDB Imports
 from pymongo import MongoClient, errors
@@ -17,7 +16,6 @@ import gridfs
 from bson.binary import Binary
 from bson.objectid import ObjectId
 from dotenv import load_dotenv
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 # Heatmap Imports
 import matplotlib
@@ -35,64 +33,35 @@ except ImportError:
 
 import secrets
 
-# ── FLASK APP SETUP ──────────────────────────────────────────────────────────
-# template_folder defaults to 'templates/' relative to this file (backend/templates/)
-app = Flask(__name__, template_folder="templates")
-app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
-# The frontend is hosted on Netlify while this API is hosted on Render. The
-# login session therefore has to be sent on cross-site fetch requests.
-app.config.update(
-    SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_SAMESITE="None",
-    SESSION_COOKIE_HTTPONLY=True,
-)
+# Configure Flask to use frontend folder for templates and static files
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend')
+TEMPLATE_DIR = os.path.join(FRONTEND_DIR, 'templates')
+STATIC_DIR = FRONTEND_DIR
 
-# CORS: set CORS_ORIGINS in Render for additional calling websites.
-# Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
-_default_frontend_origin = "https://naina-schizo.netlify.app"
-_cors_origins = os.getenv("CORS_ORIGINS", _default_frontend_origin)
-if _cors_origins.strip() == "*":
-    allowed_origins = "*"
-else:
-    allowed_origins = list(dict.fromkeys([
-        _default_frontend_origin,
-        *[origin.strip().rstrip("/") for origin in _cors_origins.split(",") if origin.strip()]
-    ]))
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, static_url_path='/')
+# CORS(app)
 CORS(
     app,
-    resources={r"/*": {"origins": allowed_origins}},
-    supports_credentials=True,
-    allow_headers=["*"],
-    expose_headers=["*"],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    resources={
+        r"/*": {
+            "origins": [
+                "https://naina-assessment.netlify.app",
+                "http://localhost:8000",
+                "http://127.0.0.1:8000"
+            ]
+        }
+    },
+    supports_credentials=True
 )
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
-
-@app.before_request
-def handle_cors_preflight():
-    if request.method != "OPTIONS":
-        return None
-    response = app.make_default_options_response()
-    request_origin = request.headers.get("Origin")
-    if allowed_origins == "*" or request_origin in allowed_origins:
-        response.headers["Access-Control-Allow-Origin"] = request_origin or "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    return response
-
-
-@app.after_request
-def add_cors_headers(response):
-    """Keep CORS visible to browsers even when a route returns an error."""
-    request_origin = request.headers.get("Origin")
-    if request_origin and (allowed_origins == "*" or request_origin in allowed_origins):
-        response.headers["Access-Control-Allow-Origin"] = request_origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Expose-Headers"] = "*"
-        response.headers.add("Vary", "Origin")
-    return response
+# CORS: restrict origins in production via the CORS_ORIGINS env var.
+# Set CORS_ORIGINS=https://your-app.vercel.app in Render dashboard.
+# Multiple origins: CORS_ORIGINS=https://a.vercel.app,https://b.com
+# _cors_origins = os.getenv("CORS_ORIGINS", "*")
+# if _cors_origins != "*":
+#     _cors_origins = [o.strip() for o in _cors_origins.split(",")]
+# CORS(app, origins=_cors_origins)
 
 # ── DISABLE BROWSER CACHING FOR ALL RESPONSES ──
 @app.after_request
@@ -109,44 +78,6 @@ USERS = {
     "doctor":    {"password": os.getenv("DOCTOR_PASSWORD",    "doctor123"),    "role": "doctor"},
     "clinician": {"password": os.getenv("CLINICIAN_PASSWORD", "clinician123"), "role": "clinician"},
 }
-
-INTEGRATION_API_KEY = os.getenv("INTEGRATION_API_KEY")
-TEST_FRONTEND_URL = os.getenv("TEST_FRONTEND_URL", "https://your-frontend.example.com/index.html")
-TEST_TOKEN_MAX_AGE = int(os.getenv("TEST_TOKEN_MAX_AGE", "3600"))
-test_token_serializer = URLSafeTimedSerializer(app.secret_key, salt="schizoeye-test")
-
-
-def _test_token_is_valid():
-    token = request.headers.get("X-Test-Token", "")
-    if not token:
-        return False
-    try:
-        test_token_serializer.loads(token, max_age=TEST_TOKEN_MAX_AGE)
-        return True
-    except (BadSignature, SignatureExpired):
-        return False
-
-
-def _caller_is_authorized():
-    return _test_token_is_valid() or bool(session.get("user"))
-
-
-@app.route('/integration/test-sessions', methods=['POST'])
-def create_test_session():
-    if not INTEGRATION_API_KEY or request.headers.get("X-Integration-Key") != INTEGRATION_API_KEY:
-        return jsonify({'success': False, 'error': 'Invalid integration credentials'}), 401
-    data = request.get_json(silent=True) or {}
-    payload = {
-        'external_reference': str(data.get('external_reference', ''))[:200],
-        'issued_at': datetime.utcnow().isoformat()
-    }
-    token = test_token_serializer.dumps(payload)
-    separator = '&' if '?' in TEST_FRONTEND_URL else '?'
-    return jsonify({
-        'success': True,
-        'test_url': f'{TEST_FRONTEND_URL}{separator}mode=test&token={token}',
-        'expires_in': TEST_TOKEN_MAX_AGE
-    })
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -267,25 +198,10 @@ def _ensure_indexes():
 
 init_mongodb()
 
-# ── MODEL LOADING ────────────────────────────────────────────────────────────
-# The deployed artifacts are the binary model produced by retrain_fixed.py:
-# Healthy versus Schizophrenia. The source dataset still contains HC/FES/CSZ.
-MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(BASE, "model_artifacts"))
-MODEL_FILE = os.getenv("MODEL_FILE", "model_calibrated.pkl")
-MODEL_PATH = os.path.join(MODEL_DIR, MODEL_FILE)
-LABEL_ENCODER_PATH = os.path.join(MODEL_DIR, "label_encoder.pkl")
-FEATURE_NAMES_PATH = os.path.join(MODEL_DIR, "feature_names.pkl")
-label_encoder = classifier = None
-MODEL_FEATURES = []
-try:
-    classifier = joblib.load(MODEL_PATH)
-    label_encoder = joblib.load(LABEL_ENCODER_PATH)
-    MODEL_FEATURES = list(joblib.load(FEATURE_NAMES_PATH))
-    if len(MODEL_FEATURES) != 59:
-        raise ValueError(f"Expected 59 model features, found {len(MODEL_FEATURES)}")
-    print(f"[OK] Model loaded: {MODEL_FILE} ({len(MODEL_FEATURES)} features)")
-except Exception as e:
-    print(f"[WARN] Model not loaded: {e}")
+# ── MODEL LOADING (disabled — data collection mode) ──
+# Models are not used in data collection mode.
+label_encoder = classifier = regressor = None
+print("[INFO] Running in data collection mode — ML models disabled")
 
 REQUIRED_FEATURES = [
     'fv_fnum_mean', 'fv_fdur_mean', 'fv_snum_mean', 'fv_sdur_mean', 'fv_samp_mean',
@@ -303,42 +219,6 @@ REQUIRED_FEATURES = [
     'antisaccade_latency', 'antisaccade_accuracy'
 ]
 
-if REQUIRED_FEATURES != MODEL_FEATURES and MODEL_FEATURES:
-    raise RuntimeError("Application feature schema does not match feature_names.pkl")
-
-
-def _validated_features(features):
-    if not isinstance(features, dict):
-        raise ValueError("features must be an object containing exactly 59 named values")
-    expected = MODEL_FEATURES or REQUIRED_FEATURES
-    missing = [name for name in expected if name not in features]
-    extra = [name for name in features if name not in expected]
-    if missing or extra:
-        raise ValueError(f"Feature schema mismatch; missing={missing}, extra={extra}")
-    cleaned = {}
-    for name in expected:
-        value = features[name]
-        if value is None or not isinstance(value, (int, float)) or not np.isfinite(value):
-            raise ValueError(f"Feature {name} must be a finite number")
-        cleaned[name] = float(value)
-    return cleaned
-
-
-def _classify_features(features):
-    cleaned = _validated_features(features)
-    row = pd.DataFrame([[cleaned[name] for name in MODEL_FEATURES or REQUIRED_FEATURES]],
-                       columns=MODEL_FEATURES or REQUIRED_FEATURES)
-    probabilities = classifier.predict_proba(row)[0]
-    classes = label_encoder.classes_
-    probability_map = {str(label): float(probability)
-                       for label, probability in zip(classes, probabilities)}
-    predicted_index = int(np.argmax(probabilities))
-    return {
-        "label": str(classes[predicted_index]),
-        "confidence": float(probabilities[predicted_index]),
-        "probabilities": probability_map,
-    }, cleaned
-
 # ── HEATMAP GENERATION FUNCTION ──
 def generate_heatmap_base64(fv_gaze_data):
     if not fv_gaze_data:
@@ -355,24 +235,18 @@ def generate_heatmap_base64(fv_gaze_data):
 
     width = int(df_clean['x'].max()) + 100 
     height = int(df_clean['y'].max()) + 100
+    
+    width = min(max(width, 800), 3000)
+    height = min(max(height, 600), 3000)
+    
+    heatmap_data = np.zeros((height, width))
 
-    # Capped at 1600px: the figure below only ever renders at ~1500x843px
-    # (figsize 10x5.625 @ 150dpi), so a larger raster just burns memory
-    # (a 3000x3000 float64 array is ~72MB, before the gaussian_filter pass
-    # allocates a second same-sized array) without adding visible resolution.
-    width = min(max(width, 800), 1600)
-    height = min(max(height, 600), 1600)
-
-    xs = df_clean['x'].to_numpy(dtype=np.int32, copy=False)
-    ys = df_clean['y'].to_numpy(dtype=np.int32, copy=False)
-    in_bounds = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
-    heatmap_data, _, _ = np.histogram2d(
-        ys[in_bounds], xs[in_bounds],
-        bins=[height, width], range=[[0, height], [0, width]]
-    )
+    for _, row in df_clean.iterrows():
+        x, y = int(row['x']), int(row['y'])
+        if 0 <= x < width and 0 <= y < height:
+            heatmap_data[y, x] += 1
 
     heatmap_smoothed = gaussian_filter(heatmap_data, sigma=30)
-    del heatmap_data, xs, ys, in_bounds
 
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(10, 5.625), dpi=150)
@@ -395,12 +269,9 @@ def generate_heatmap_base64(fv_gaze_data):
     plt.tight_layout(pad=0)
     plt.savefig(buf, format='png', facecolor='black', bbox_inches='tight', pad_inches=0)
     plt.close(fig)
-    del heatmap_smoothed, fig, ax
     buf.seek(0)
-
+    
     b64_str = base64.b64encode(buf.read()).decode('utf-8')
-    buf.close()
-    gc.collect()
     return f"data:image/png;base64,{b64_str}"
 
 def _internal_generate_pdf(data):
@@ -435,8 +306,7 @@ def _internal_generate_pdf(data):
         if 'panss_score' not in data:
             data['panss_score'] = 'Not recorded'
         
-        # Prediction is optional for direct report generation, but is included
-        # automatically for reports created by /save_results.
+        # No AI predictions in data collection mode — omit predictions block
 
         rendered_html = render_template("report_template.html", data=data)
         return HTML(string=rendered_html).write_pdf(pdf_variant='pdf/a-1b')
@@ -474,37 +344,14 @@ def _upload_to_gridfs(binary_payload, filename, content_type, metadata):
 def health():
     return jsonify({
         'status': 'ok', 
-        'mode': 'inference',
-        'model_loaded': classifier is not None,
-        'model_file': MODEL_FILE if classifier is not None else None,
+        'mode': 'data_collection',
         'mongodb_connected': db is not None,
         'mongodb_db': db.name if db is not None else None
     })
 
-@app.route('/classify', methods=['POST'])
-def classify():
-    if not _caller_is_authorized():
-        return jsonify({'success': False, 'error': 'Authentication required'}), 401
-    if classifier is None or label_encoder is None:
-        return jsonify({'success': False, 'error': 'Classifier not available'}), 503
-    try:
-        data = request.get_json(silent=True) or {}
-        prediction, cleaned = _classify_features(data.get('features'))
-        return jsonify({
-            'success': True,
-            'prediction': prediction,
-            'features': cleaned,
-            'feature_order': MODEL_FEATURES or REQUIRED_FEATURES
-        })
-    except ValueError as e:
-        return jsonify({'success': False, 'error': str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': 'Inference failed'}), 500
-
 # ── SESSION DATA ROUTES ──────────────────────────────────────────────────────
 
-@app.route('/sessions', methods=['GET'])
+@app.route('/sessions', methods=['GET','OPTIONS'])
 def get_sessions():
     """Return summary list of all sessions for the dashboard."""
     if db is None:
@@ -679,45 +526,20 @@ def export_all_features():
     try:
         import csv, io
         col = db[SESSIONS_COLLECTION]
-        docs = list(col.find(
-            {},
-            {'metadata': 1, 'results.features': 1, 'results.panss_score': 1,
-             'results.feature_quality': 1, 'results.capture_diagnostics': 1}
-        ).sort('metadata.timestamp', -1))
+        docs = list(col.find({}, {'metadata': 1, 'results.features': 1, 'results.panss_score': 1}).sort('metadata.timestamp', -1))
         output = io.StringIO()
-        # FIX ACC-3 / ACC-4: surface per-session data-quality/capture-rate summary
-        # columns alongside the 59 features, instead of exporting the numbers with
-        # no way to tell which ones are real measurements vs missing-data floor
-        # substitutes vs clipped values, or how fast each session was actually
-        # captured. Anyone building a training set from this CSV needs this to
-        # avoid learning from silently-injected artifacts (see battery-controller.js
-        # finalizeFeature() comments for why that risk is concrete, not theoretical).
-        summary_cols = ['n_features_missing', 'n_features_clipped',
-                         'capture_hz_free_viewing', 'capture_hz_spem_min', 'capture_hz_sz_min']
-        fieldnames = ['session_id', 'name', 'date', 'panss_score'] + summary_cols + REQUIRED_FEATURES
+        fieldnames = ['session_id', 'name', 'date', 'panss_score'] + REQUIRED_FEATURES
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         for d in docs:
             meta = d.get('metadata', {})
             res  = d.get('results', {})
             feats = res.get('features', {})
-            quality = res.get('feature_quality', {}) or {}
-            capture = res.get('capture_diagnostics', {}) or {}
-
-            def _min_hz(phase_map):
-                hz_vals = [v.get('hz') for v in (phase_map or {}).values() if isinstance(v, dict) and v.get('hz')]
-                return round(min(hz_vals), 1) if hz_vals else ''
-
             row = {
                 'session_id': str(d['_id']),
                 'name': meta.get('name', ''),
                 'date': meta.get('timestamp', ''),
-                'panss_score': res.get('panss_score', ''),
-                'n_features_missing': sum(1 for q in quality.values() if q == 'missing'),
-                'n_features_clipped': sum(1 for q in quality.values() if q in ('clipped_low', 'clipped_high')),
-                'capture_hz_free_viewing': (capture.get('freeViewing') or {}).get('hz', ''),
-                'capture_hz_spem_min': _min_hz(capture.get('spem')),
-                'capture_hz_sz_min': _min_hz(capture.get('sz')),
+                'panss_score': res.get('panss_score', '')
             }
             for f in REQUIRED_FEATURES:
                 row[f] = feats.get(f, '')
@@ -734,8 +556,6 @@ def export_all_features():
 @app.route('/save_results', methods=['POST'])
 def save_results():
     global db, fs
-    if not _caller_is_authorized():
-        return jsonify({'success': False, 'error': 'Authentication required'}), 401
     print("[DEBUG] /save_results called. Checking DB connection...")
     if db is None or fs is None:
         print("[DEBUG] DB is None! Attempting to reconnect...")
@@ -747,9 +567,9 @@ def save_results():
     
     try:
         print("[DEBUG] Attempting to parse JSON payload...")
-        data = request.get_json(silent=True) or {}
+        data = request.get_json()
         print(f"[DEBUG] JSON parsed successfully. Payload keys: {list(data.keys())}")
-        prediction, validated_features = _classify_features(data.get('features'))
+        
         subject_id = data.get('subject_id', 'Unknown')
         timestamp = datetime.now()
         gridfs_refs = {}
@@ -761,43 +581,51 @@ def save_results():
 
         # 1. Upload GridFS assets before creating the clinical session record.
         if 'fv_gaze' in data:
-            print("[DEBUG] Converting fv_gaze to CSV...")
-            fv_csv = _json_rows_to_csv_binary(data['fv_gaze'])
-            print("[DEBUG] Uploading fv_gaze to GridFS...")
-            gridfs_refs['fv_id'] = _upload_to_gridfs(
-                fv_csv,
-                filename=f"fv_{subject_id}_{timestamp.strftime('%Y%m%d%H%M')}.csv",
-                content_type='text/csv',
-                metadata={**storage_metadata, 'kind': 'fv_csv'}
-            )
-            print(f"[DEBUG] fv_gaze uploaded: {gridfs_refs['fv_id']}")
+            try:
+                print("[DEBUG] Converting fv_gaze to CSV...")
+                fv_csv = _json_rows_to_csv_binary(data['fv_gaze'])
+                print("[DEBUG] Uploading fv_gaze to GridFS...")
+                gridfs_refs['fv_id'] = _upload_to_gridfs(
+                    fv_csv,
+                    filename=f"fv_{subject_id}_{timestamp.strftime('%Y%m%d%H%M')}.csv",
+                    content_type='text/csv',
+                    metadata={**storage_metadata, 'kind': 'fv_csv'}
+                )
+                print(f"[DEBUG] fv_gaze uploaded: {gridfs_refs['fv_id']}")
+            except Exception as e:
+                print(f"[WARN] FV CSV upload failed; session data will still be saved: {e}")
 
         if 'spem_gaze' in data:
-            print("[DEBUG] Converting spem_gaze to CSV...")
-            spem_csv = _json_rows_to_csv_binary(data['spem_gaze'])
-            print("[DEBUG] Uploading spem_gaze to GridFS...")
-            gridfs_refs['spem_id'] = _upload_to_gridfs(
-                spem_csv,
-                filename=f"spem_{subject_id}_{timestamp.strftime('%Y%m%d%H%M')}.csv",
-                content_type='text/csv',
-                metadata={**storage_metadata, 'kind': 'spem_csv'}
-            )
-            print(f"[DEBUG] spem_gaze uploaded: {gridfs_refs['spem_id']}")
+            try:
+                print("[DEBUG] Converting spem_gaze to CSV...")
+                spem_csv = _json_rows_to_csv_binary(data['spem_gaze'])
+                print("[DEBUG] Uploading spem_gaze to GridFS...")
+                gridfs_refs['spem_id'] = _upload_to_gridfs(
+                    spem_csv,
+                    filename=f"spem_{subject_id}_{timestamp.strftime('%Y%m%d%H%M')}.csv",
+                    content_type='text/csv',
+                    metadata={**storage_metadata, 'kind': 'spem_csv'}
+                )
+                print(f"[DEBUG] spem_gaze uploaded: {gridfs_refs['spem_id']}")
+            except Exception as e:
+                print(f"[WARN] SPEM CSV upload failed; session data will still be saved: {e}")
 
         if 'sz_gaze' in data:
-            print("[DEBUG] Converting sz_gaze to CSV...")
-            sz_csv = _serialize_sz_csv(data['sz_gaze'])
-            print("[DEBUG] Uploading sz_gaze to GridFS...")
-            gridfs_refs['sz_id'] = _upload_to_gridfs(
-                sz_csv,
-                filename=f"sz_{subject_id}_{timestamp.strftime('%Y%m%d%H%M')}.csv",
-                content_type='text/csv',
-                metadata={**storage_metadata, 'kind': 'sz_csv'}
-            )
-            print(f"[DEBUG] sz_gaze uploaded: {gridfs_refs['sz_id']}")
+            try:
+                print("[DEBUG] Converting sz_gaze to CSV...")
+                sz_csv = _serialize_sz_csv(data['sz_gaze'])
+                print("[DEBUG] Uploading sz_gaze to GridFS...")
+                gridfs_refs['sz_id'] = _upload_to_gridfs(
+                    sz_csv,
+                    filename=f"sz_{subject_id}_{timestamp.strftime('%Y%m%d%H%M')}.csv",
+                    content_type='text/csv',
+                    metadata={**storage_metadata, 'kind': 'sz_csv'}
+                )
+                print(f"[DEBUG] sz_gaze uploaded: {gridfs_refs['sz_id']}")
+            except Exception as e:
+                print(f"[WARN] SZ CSV upload failed; session data will still be saved: {e}")
 
         # 2. Generate and Upload PDF Report
-        pdf_bytes = b''
         try:
             print("[DEBUG] Preparing PDF payload...")
             # In save_results(), replace the pdf_payload block:
@@ -809,8 +637,7 @@ def save_results():
                     'date': timestamp.strftime('%d %b %Y')
                 },
                 'panss_score': data.get('panss_score') or 'Not recorded',   # ← ADD THIS LINE
-                'metrics': validated_features,
-                'prediction': prediction,
+                'metrics': data.get('features', {}),
                 'fv_gaze': data.get('fv_gaze', []),
                 'doctor_notes': data.get('notes', ''),
                 'images': {
@@ -831,11 +658,8 @@ def save_results():
                 metadata={**storage_metadata, 'kind': 'pdf_report'}
             )
             print(f"[DEBUG] PDF uploaded: {gridfs_refs['report_id']}")
-            del pdf_bytes, pdf_payload
-            gc.collect()
         except Exception as pdf_err:
             print(f"Warning: PDF generation/upload failed: {pdf_err}")
-            return jsonify({'success': False, 'error': 'PDF generation failed'}), 500
 
         # 3. Create Main Session Document
         print("[DEBUG] Creating main session document...")
@@ -854,17 +678,7 @@ def save_results():
             },
             "results": {
                 "panss_score": data.get('panss_score'),  # store as-is (None/null → None in Mongo)
-                "features": validated_features,
-                "feature_order": MODEL_FEATURES or REQUIRED_FEATURES,
-                "prediction": prediction,
-                # FIX ACC-3 / ACC-4 (battery-controller.js): persist the per-feature
-                # data-quality flags (real vs missing-floor vs clipped) and the
-                # empirical per-task capture-rate diagnostics that the frontend now
-                # computes and sends. Previously these were silently dropped here
-                # even after the frontend started sending them, which would have
-                # made the fix a no-op for anything actually saved to the database.
-                "feature_quality": data.get('feature_quality', data.get('data_quality', {})),
-                "capture_diagnostics": data.get('capture_diagnostics', {})
+                "features": data.get('features', {})
             },
             "notes": data.get('notes', ""),
             "notes_author": data.get('notes_author', "unknown"),
@@ -881,26 +695,11 @@ def save_results():
         print("[DEBUG] Inserting session into MongoDB...")
         insert_result = db[SESSIONS_COLLECTION].insert_one(session_doc)
         print(f"[DEBUG] Session inserted with ID: {insert_result.inserted_id}")
-        session_id = str(insert_result.inserted_id)
         return jsonify({
             'success': True,
-            'session_id': session_id,
-            'subject_id': subject_id,
+            'message': 'Session saved to MongoDB Atlas successfully',
+            'session_id': str(insert_result.inserted_id),
             'patient_id': patient_id,
-            'prediction': {
-                'label': prediction['label'],
-                'confidence': float(prediction['confidence']),
-                'probabilities': {
-                    str(label): float(probability)
-                    for label, probability in prediction['probabilities'].items()
-                }
-            },
-            'features': validated_features,
-            'feature_order': MODEL_FEATURES or REQUIRED_FEATURES,
-            'report_url': f"/sessions/{session_id}/pdf",
-            # The client downloads the stored GridFS report through report_url.
-            # Avoid duplicating the complete PDF in this JSON response.
-            'pdf_base64': None,
             'gridfs_refs': {key: str(value) for key, value in session_doc['gridfs_refs'].items()}
         })
 
