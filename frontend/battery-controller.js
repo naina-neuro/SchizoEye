@@ -360,21 +360,25 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     if (typeof window.TestDiag === 'function') window.TestDiag('startClickCal begin');
     $('battery-intro').classList.add('protocol-started');
     $('video-cal-screen').style.display = 'none';
-    ['battery-container', 'calibration-screen', 'cal-screen', 'cal-dot'].forEach(id => {
-      const element = $(id);
-      if (element) {
-        element.classList.remove('hidden');
-        if (id === 'cal-screen') element.style.display = 'flex';
-        if (id === 'cal-dot') element.style.display = 'none';
-      }
-    });
-    ['camera-check-screen', 'video-cal-screen'].forEach(id => {
-      const element = $(id);
-      if (element) element.classList.remove('active', 'visible');
-    });
+    $('camera-check-screen').style.display = 'none';
+    // FIX CAL-1: this used to also show #cal-screen (display:flex) and
+    // #cal-dot/#battery-container/#calibration-screen here, synchronously,
+    // before any of the async work below (camera teardown, EyeTracker
+    // startup, EyeTracker.calibrate()) had even started. eye-tracker.js v13
+    // owns its OWN calibration surface end-to-end — calUI() builds
+    // #nt-cal-root and explicitly hides #cal-screen/#cal-dot the moment it
+    // runs (see eye-tracker.js), but that doesn't happen until deep inside
+    // calibrate(), after the camera reopens and TensorFlow/FaceMesh finish
+    // loading — which can easily take a couple of seconds. In between,
+    // #cal-screen was sitting on screen showing just its bare "Eye Tracker
+    // Calibration" header with no dot and no progress pips (the pips are
+    // built by the pre-v13 calibration code, which v13 no longer uses) —
+    // exactly the "unused white calibration screen" flash. Not touching
+    // #cal-screen/#cal-dot/#battery-container/#calibration-screen at all
+    // here means nothing is shown until calUI() actually has something to
+    // show.
     if (typeof window.TestDiag === 'function') window.TestDiag('calibration surfaces reset', {
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-      calScreen: $('cal-screen') ? { width: $('cal-screen').offsetWidth, height: $('cal-screen').offsetHeight } : null
+      viewport: { width: window.innerWidth, height: window.innerHeight }
     });
 
     // Request fullscreen while this handler still has the user's gesture.
@@ -727,6 +731,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   let _lastDataQuality = {}; // FIX BC-MATH-10: which features (if any) fell back to a no-data placeholder
   let _lastResult = null;
   let _lastPrediction = null;
+  let _lastClassProbabilities = null; // FIX PDF-1: needed to fill in healthy/schizophrenia % on the flattened-prediction fallback path
   let _lastFvRaw = []; // NEW
 
   async function getPlotlyImage(divId) {
@@ -767,6 +772,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
               return val ? parseFloat(val) : (panssScore ? parseFloat(panssScore) : null);
             })(),
             metrics: _lastFeatures,
+            prediction: _buildPredictionForReport(), // FIX PDF-1
             images: {
                 heatmap: "",
                 spem_hs4: hs4Img,
@@ -2577,10 +2583,12 @@ function cloneRows(rows) {
           };
         }
         _lastPrediction = classifyData.prediction;
+        _lastClassProbabilities = classifyData.class_probabilities || null; // FIX PDF-1
         statusEl.textContent = `✓ Inference complete — ${classifyData.prediction.label}`;
         renderPrediction(classifyData.prediction, classifyData.class_probabilities);
       } catch (inferenceErr) {
         _lastPrediction = null;
+        _lastClassProbabilities = null; // FIX PDF-1
         statusEl.textContent = `⚠ Inference unavailable — saving collected data anyway...`;
         console.warn('[BatteryController] Classification failed; continuing to save:', inferenceErr);
         if (typeof window.reportClientError === 'function') window.reportClientError('classification (non-blocking)', inferenceErr, `API: ${API_BASE}/classify`);
@@ -2631,6 +2639,31 @@ function cloneRows(rows) {
       }
     }
     return { healthy, schizo };
+  }
+
+  // FIX PDF-1: neither downloadPDFReport() nor saveSessionToDatabase() were
+  // ever sending the model's prediction to the backend at all — the payload
+  // built for /generate-report and /save_results only ever carried
+  // patient info, PANSS, the 59 features, and the graph images. app.py's
+  // _internal_generate_pdf() explicitly documented this as intentional
+  // ("No AI predictions in data collection mode — omit predictions block"),
+  // and report_template.html had no place to show one even if it had been
+  // sent. Both are fixed now (see app.py + report_template.html); this
+  // builds the {label, confidence, healthy_probability,
+  // schizophrenia_probability} shape the template expects, reusing the
+  // same _extractProbs() fallback the on-screen prediction card already
+  // relies on so a flattened {label, confidence}-only prediction (the
+  // no-`prediction`-object branch in runAIClassification's fetch) still
+  // gets its percentages filled in from _lastClassProbabilities.
+  function _buildPredictionForReport() {
+    if (!_lastPrediction) return null;
+    const { healthy, schizo } = _extractProbs(_lastPrediction, _lastClassProbabilities);
+    return {
+      label: _lastPrediction.label,
+      confidence: _lastPrediction.confidence,
+      healthy_probability: healthy,
+      schizophrenia_probability: schizo,
+    };
   }
 
   function renderPrediction(prediction, classProbabilities) {
@@ -2738,6 +2771,7 @@ function cloneRows(rows) {
                 ? EyeTracker.getPerformanceStats() : null,
               data_quality: _lastDataQuality,
               features: _lastFeatures,
+              prediction: _buildPredictionForReport(), // FIX PDF-1
               fv_gaze: _lastFvRaw,
               spem_gaze: buildSpemRowsForExtractor(),
               sz_gaze: buildSzRowsForExtractor(),
