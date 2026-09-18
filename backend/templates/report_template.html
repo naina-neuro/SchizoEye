@@ -1,188 +1,180 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Naina - Oculomotor Assessment Report</title>
     <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #f0f0f0;
-            color: #333;
-            -webkit-print-color-adjust: exact;
+        /* 
+           DESIGN STYLES BASED ON REFERENCE CODE 
+           Includes print optimization and responsive viewing.
+        */
+        body { 
+            font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 0; 
+            background-color: #f0f0f0; 
+            color: #333; 
+            -webkit-print-color-adjust: exact; 
         }
-
-        .report-container {
-            width: 210mm;
-            margin: 20px auto;
+        
+        .report-container { 
+            width: 210mm; 
+            margin: 20px auto; 
         }
-
+        
         .page {
-            width: 210mm;
-            height: 296.5mm;
-            /* Adjusted slightly to prevent blank overflow pages */
-            background-color: #ffffff;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            margin-bottom: 30px;
-            padding: 12mm 15mm;
-            box-sizing: border-box;
-            position: relative;
+            width: 210mm; 
+            height: 296.5mm; /* Adjusted slightly to prevent blank overflow pages */
+            background-color: #ffffff; 
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            margin-bottom: 30px; 
+            padding: 12mm 15mm; 
+            box-sizing: border-box; 
+            position: relative; 
             overflow: hidden;
             page-break-after: always;
         }
 
-        .clinic-header {
-            display: flex;
-            justify-content: space-between;
-            border-bottom: 2px solid #02346a;
-            padding-bottom: 8px;
-            margin-bottom: 12px;
+        .clinic-header { 
+            display: flex; 
+            justify-content: space-between; 
+            border-bottom: 2px solid #02346a; 
+            padding-bottom: 8px; 
+            margin-bottom: 12px; 
         }
-
-        .clinic-header h1 {
-            color: #07478c;
-            font-size: 22pt;
-            margin: 0;
+        
+        .clinic-header h1 { 
+            color: #07478c; 
+            font-size: 22pt; 
+            margin: 0; 
         }
-
-        .clinic-header h2 {
-            color: #07478c;
-            font-size: 13pt;
-            margin: 3px 0 0 0;
-            font-weight: bold;
+        
+        .clinic-header h2 { 
+            color: #07478c; 
+            font-size: 13pt; 
+            margin: 3px 0 0 0; 
+            font-weight: bold; 
         }
-
-        .clinic-logo {
-            text-align: right;
-            font-size: 9pt;
-            color: #777;
+        
+        .clinic-logo { 
+            text-align: right; 
+            font-size: 9pt; 
+            color: #777; 
         }
-
-        .patient-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 15px;
-            font-size: 9.5pt;
+        
+        .patient-table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin-bottom: 15px; 
+            font-size: 9.5pt; 
         }
-
-        .patient-table td {
-            padding: 5px;
-            border: 1px solid #ddd;
+        
+        .patient-table td { 
+            padding: 5px; 
+            border: 1px solid #ddd; 
         }
-
-        .patient-table td.label {
-            background-color: #f9f9f9;
-            font-weight: bold;
-            width: 22%;
+        
+        .patient-table td.label { 
+            background-color: #f9f9f9; 
+            font-weight: bold; 
+            width: 22%; 
         }
-
-        h3.section-header {
-            background-color: #0753a3;
-            color: #fff;
-            padding: 5px 15px;
-            margin: 9px 0 8px 0;
-            font-size: 12pt;
-            border-radius: 2px;
+        
+        h3.section-header { 
+            background-color: #0753a3; 
+            color: #fff; 
+            padding: 5px 15px; 
+            margin: 9px 0 8px 0; 
+            font-size: 12pt; 
+            border-radius: 2px; 
         }
-
-        .results-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 10px;
-            font-size: 9pt;
+        
+        .results-table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin-bottom: 10px; 
+            font-size: 9pt; 
         }
-
-        .results-table th {
-            background-color: #f2f2f2;
-            padding: 6px;
-            border: 1px solid #ddd;
-            text-align: left;
-            font-weight: bold;
+        
+        .results-table th { 
+            background-color: #f2f2f2; 
+            padding: 6px; 
+            border: 1px solid #ddd; 
+            text-align: left; 
+            font-weight: bold; 
         }
-
-        .results-table td {
-            padding: 6px;
-            border: 1px solid #ddd;
+        
+        .results-table td { 
+            padding: 6px; 
+            border: 1px solid #ddd; 
         }
-
+        
         /* --- UPDATED IMAGE STYLING --- */
-
-        .visual-container {
-            border: 1px solid #ddd;
-            background-color: #000;
-            margin-bottom: 10px;
-            padding: 4px;
-            border-radius: 3px;
+        
+        .visual-container { 
+            border: 1px solid #ddd; 
+            background-color: #000; 
+            margin-bottom: 10px; 
+            padding: 4px; 
+            border-radius: 3px; 
             text-align: center;
         }
-
-        .visual-header {
-            font-weight: bold;
-            color: #0350a3;
-            margin-bottom: 4px;
-            font-size: 10pt;
-            text-align: left;
-            background-color: rgb(255, 255, 255);
-            padding: 2px 5px;
+        
+        .visual-header { 
+            font-weight: bold; 
+            color: #0350a3; 
+            margin-bottom: 4px; 
+            font-size: 10pt; 
+            text-align: left; 
+            background-color: rgb(255, 255, 255); 
+            padding: 2px 5px; 
         }
-
-        .image-placeholder {
-            width: 100%;
-            display: flex;
-            justify-content: center;
-            /* Centers horizontally */
-            align-items: center;
-            /* Centers vertically */
+        
+        .image-placeholder { 
+            width: 100%; 
+            display: flex; 
+            justify-content: center; /* Centers horizontally */
+            align-items: center;     /* Centers vertically */
             background-color: #000;
-            min-height: 180px;
-            /* Minimum height to ensure visibility */
+            min-height: 180px;       /* Minimum height to ensure visibility */
             text-align: center;
         }
-
-        .image-placeholder img {
+        
+        .image-placeholder img { 
             /* Responsive scaling that keeps aspect ratio */
-            max-width: 98%;
-            /* Leaves a tiny margin so it doesn't touch edges */
-            max-height: 250px;
-            /* Limits height to fit layout */
+            max-width: 98%;          /* Leaves a tiny margin so it doesn't touch edges */
+            max-height: 250px;       /* Limits height to fit layout */
             height: auto;
             width: auto;
-            object-fit: contain;
-            /* Ensures image is never cropped, just scaled down */
+            object-fit: contain;     /* Ensures image is never cropped, just scaled down */
             display: block;
-            margin: 0 auto;
-            /* Extra centering safety */
+            margin: 0 auto;          /* Extra centering safety */
         }
-
+        
         /* Specific constraint for Page 2 (with two graphs) - slightly smaller height */
-        .page-spem-a .image-placeholder img {
-            max-height: 195px;
+        .page-spem-a .image-placeholder img { 
+            max-height: 195px; 
         }
 
         /* Split image layout for Fixation Page */
         .image-split {
             display: flex;
             width: 100%;
-            gap: 8px;
-            /* Space between the two images */
+            gap: 8px; /* Space between the two images */
             height: 100%;
         }
-
-        .image-split>div {
+        
+        .image-split > div {
             flex: 1;
             display: flex;
             justify-content: center;
-            align-items: center;
-            /* Vertically center images in their respective columns */
+            align-items: center;     /* Vertically center images in their respective columns */
         }
-
+        
         .image-split img {
             max-width: 100%;
-            max-height: 220px;
-            /* Limit height for side-by-side images */
+            max-height: 220px;       /* Limit height for side-by-side images */
             width: auto;
             height: auto;
             object-fit: contain;
@@ -190,35 +182,93 @@
         }
 
         /* --- END UPDATED IMAGE STYLING --- */
-
-        .remarks-container {
-            background-color: #f9f9f9;
-            padding: 10px;
-            border-left: 5px solid #0056b3;
-            margin-bottom: 10px;
-            font-size: 9.5pt;
-            line-height: 1.3;
+        
+        .remarks-container { 
+            background-color: #f9f9f9; 
+            padding: 10px; 
+            border-left: 5px solid #0056b3; 
+            margin-bottom: 10px; 
+            font-size: 9.5pt; 
+            line-height: 1.3; 
+        }
+        
+        .page-footer { 
+            position: absolute; 
+            bottom: 10mm; 
+            left: 15mm; 
+            right: 15mm; 
+            text-align: right; 
+            border-top: 1px solid #ddd; 
+            padding-top: 5px; 
+            font-size: 8.5pt; 
+            color: #777; 
+        }
+        
+        .diagnosis-line { 
+            margin-top: 15px; 
+            padding: 12px; 
+            border: 2px solid #0056b3; 
+            border-radius: 5px; 
+            font-size: 11pt; 
+            text-align: center; 
         }
 
-        .page-footer {
-            position: absolute;
-            bottom: 10mm;
-            left: 15mm;
-            right: 15mm;
-            text-align: right;
-            border-top: 1px solid #ddd;
-            padding-top: 5px;
-            font-size: 8.5pt;
-            color: #777;
-        }
-
-        .diagnosis-line {
-            margin-top: 15px;
-            padding: 12px;
+        /* --- MODEL PREDICTION SUMMARY --- */
+        .prediction-box {
             border: 2px solid #0056b3;
             border-radius: 5px;
-            font-size: 11pt;
-            text-align: center;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            background-color: #f7fafd;
+        }
+        .prediction-box.unavailable {
+            border-color: #999;
+            background-color: #f9f9f9;
+        }
+        .prediction-headline {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .prediction-label {
+            font-size: 15pt;
+            font-weight: bold;
+        }
+        .prediction-confidence {
+            font-size: 9.5pt;
+            color: #555;
+        }
+        .prediction-bars {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9pt;
+        }
+        .prediction-bars td {
+            padding: 4px 6px;
+            vertical-align: middle;
+        }
+        .prediction-bars td.pb-label { width: 18%; font-weight: bold; }
+        .prediction-bars td.pb-pct { width: 12%; text-align: right; font-weight: bold; }
+        .prediction-bars td.pb-track {
+            width: 70%;
+        }
+        .pb-track-bg {
+            background-color: #e6e6e6;
+            border-radius: 3px;
+            height: 10px;
+            overflow: hidden;
+        }
+        .pb-track-fill {
+            height: 100%;
+            border-radius: 3px;
+        }
+        .prediction-note {
+            font-size: 8.5pt;
+            color: #666;
+            margin-top: 8px;
+            line-height: 1.4;
         }
 
         /* PRINT SETTINGS */
@@ -227,16 +277,8 @@
                 size: A4;
                 margin: 0;
             }
-
-            body {
-                background-color: #fff;
-            }
-
-            .report-container {
-                margin: 0;
-                width: 100%;
-            }
-
+            body { background-color: #fff; }
+            .report-container { margin: 0; width: 100%; }
             .page {
                 box-shadow: none;
                 margin: 0;
@@ -244,498 +286,385 @@
                 height: 297mm;
                 page-break-after: always;
             }
-
-            * {
-                -webkit-print-color-adjust: exact !important;
-                print-color-adjust: exact !important;
-            }
-
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            
             .page-footer::after {
                 content: "Page " counter(page) " of " counter(pages);
             }
         }
     </style>
 </head>
-
 <body>
 
-    <div class="report-container">
+<div class="report-container">
 
-        <!-- PAGE 1 -->
-        <div class="page">
-            <div class="clinic-header">
-                <div>
-                    <h1>NAINA</h1>
-                    <h2>Oculomotor Assessment Report</h2>
-                </div>
-                <div class="clinic-logo">Dept of Neuro-Psychiatry<br>Hyderabad, TS</div>
+    <!-- PAGE 1 -->
+    <div class="page">
+        <div class="clinic-header">
+            <div>
+                <h1>NAINA</h1>
+                <h2>Oculomotor Assessment Report</h2>
             </div>
-
-            <table class="patient-table">
-                <tr>
-                    <td class="label">Patient Name:</td>
-                    <td>{{ data.patient.name }}</td>
-                    <td class="label">Patient ID:</td>
-                    <td>{{ data.patient.id }}</td>
-                </tr>
-                <tr>
-                    <td class="label">Age/Sex:</td>
-                    <td>{{ data.patient.age_sex }}</td>
-                    <td class="label">PANSS Score:</td>
-                    <td><strong>{{ data.panss_score|default('Not recorded') }}</strong></td>
-                </tr>
-                <tr>
-                    <td class="label">Date:</td>
-                    <td colspan="3">{{ data.patient.date }}</td>
-                </tr>
-            </table>
-
-            {% if data.prediction %}
-            <div class="diagnosis-line" style="margin-top: 10px; border-color: #0056b3; background-color: #f0f7ff;">
-                <strong>Model Inference:</strong>
-                {{ data.prediction.label }}
-                ({{ (data.prediction.confidence * 100) | round(1) }}% confidence)
-            </div>
-            {% endif %}
-
-            <h3 class="section-header">TASK 1: Free-Viewing (FV) Analysis</h3>
-
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>fv_spl_mean</td>
-                        <td>Scanpath Length (degrees)</td>
-                        <td>{{ data.metrics.fv_spl_mean }}</td>
-                        <td>600.0-1200.0</td>
-                    </tr>
-                    <tr>
-                        <td>fv_disp_mean</td>
-                        <td>Dispersion of Fixations</td>
-                        <td>{{ data.metrics.fv_disp_mean }}</td>
-                        <td>0.8-1.5</td>
-                    </tr>
-                    <tr>
-                        <td>fv_fnum_mean</td>
-                        <td>Number of Fixations</td>
-                        <td>{{ data.metrics.fv_fnum_mean }}</td>
-                        <td>18.0-28.0</td>
-                    </tr>
-                    <tr>
-                        <td>fv_fdur_mean</td>
-                        <td>Fixation Duration (ms)</td>
-                        <td>{{ data.metrics.fv_fdur_mean }} ms</td>
-                        <td>200.0-350.0</td>
-                    </tr>
-                    <tr>
-                        <td>fv_snum_mean</td>
-                        <td>Number of Saccades</td>
-                        <td>{{ data.metrics.fv_snum_mean }}</td>
-                        <td>17.0-27.0</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <div class="visual-container">
-                <div class="visual-header">Gaze Scanpath Heatmap</div>
-                <div class="image-placeholder">
-                    <img src="{{ data.images.heatmap }}" alt="FV Heatmap">
-                </div>
-            </div>
-
-            <div class="remarks-container">
-                <strong>Clinical Remarks:</strong>
-                Gaze behavior demonstrates exploratory characteristics. Fixation counts and durations fall relative to
-                normative ranges, reflecting natural visual processing and salience detection.
-            </div>
-
-            <div class="page-footer"></div>
+            <div class="clinic-logo">Dept of Neuro-Psychiatry<br>Hyderabad, TS</div>
         </div>
 
-        <!-- PAGE 2 -->
-        <div class="page page-spem-a">
-            <div class="clinic-header">
-                <div>
-                    <h1>NAINA</h1>
-                    <h2>Smooth Pursuit Analysis - A</h2>
-                </div>
-            </div>
+        <table class="patient-table">
+            <tr>
+                <td class="label">Patient Name:</td>
+                <td>{{ data.patient.name }}</td>
+                <td class="label">Patient ID:</td>
+                <td>{{ data.patient.id }}</td>
+            </tr>
+            <tr>
+                <td class="label">Age/Sex:</td>
+                <td>{{ data.patient.age_sex }}</td>
+                <td class="label">PANSS Score:</td>
+                <td><strong>{{ data.panss_score|default('Not recorded') }}</strong></td>
+            </tr>
+            <tr>
+                <td class="label">Date:</td>
+                <td colspan="3">{{ data.patient.date }}</td>
+            </tr>
+        </table>
 
-            <h3 class="section-header">TASK 2.1: Horizontal Smooth Pursuit (HS4 - 0.4 Hz)</h3>
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>HS4_Mean_H_gain</td>
-                        <td>Horizontal Global Gain</td>
-                        <td>{{ data.metrics.HS4_Mean_H_gain }}</td>
-                        <td>0.85-1.10</td>
-                    </tr>
-                    <tr>
-                        <td>HS4_Mean_H_logSNR</td>
-                        <td>log Signal to Noise Ratio</td>
-                        <td>{{ data.metrics.HS4_Mean_H_logSNR }}</td>
-                        <td>> 2.0</td>
-                    </tr>
-                    <tr>
-                        <td>HS4_Mean_H_RMSE</td>
-                        <td>Root Mean Square Error</td>
-                        <td>{{ data.metrics.HS4_Mean_H_RMSE }} px</td>
-                        <td>
-                            < 120.0</td>
-                    </tr>
-                    <tr>
-                        <td>HS4_SacNum</td>
-                        <td>Number of Saccades</td>
-                        <td>{{ data.metrics.HS4_SacNum }}</td>
-                        <td></td>
-                    </tr>
-                    <tr>
-                        <td>HS4_SacAmp</td>
-                        <td>Saccade Amplitude (deg)</td>
-                        <td>{{ data.metrics.HS4_SacAmp }}&deg;</td>
-                        <td>
-                            < 2.0&deg;</td>
-                    </tr>
-                </tbody>
+        <h3 class="section-header">Model Prediction Summary</h3>
+        {% if data.prediction and data.prediction.label %}
+        <div class="prediction-box">
+            <div class="prediction-headline">
+                <span class="prediction-label" style="color: {{ '#b91c1c' if 'schiz' in (data.prediction.label|lower) else '#166534' }};">
+                    {{ data.prediction.label }}
+                </span>
+                <span class="prediction-confidence">
+                    {% if data.prediction.confidence is not none %}{{ (data.prediction.confidence * 100) | round(1) }}% model confidence{% else %}confidence not reported{% endif %}
+                </span>
+            </div>
+            <table class="prediction-bars">
+                <tr>
+                    <td class="pb-label" style="color:#166534;">Healthy</td>
+                    <td class="pb-pct">{% if data.prediction.healthy_probability is not none %}{{ (data.prediction.healthy_probability * 100) | round(1) }}%{% else %}&mdash;{% endif %}</td>
+                    <td class="pb-track"><div class="pb-track-bg"><div class="pb-track-fill" style="width:{{ (data.prediction.healthy_probability * 100) | round(1) if data.prediction.healthy_probability is not none else 0 }}%; background-color:#166534;"></div></div></td>
+                </tr>
+                <tr>
+                    <td class="pb-label" style="color:#b91c1c;">Schizophrenia</td>
+                    <td class="pb-pct">{% if data.prediction.schizophrenia_probability is not none %}{{ (data.prediction.schizophrenia_probability * 100) | round(1) }}%{% else %}&mdash;{% endif %}</td>
+                    <td class="pb-track"><div class="pb-track-bg"><div class="pb-track-fill" style="width:{{ (data.prediction.schizophrenia_probability * 100) | round(1) if data.prediction.schizophrenia_probability is not none else 0 }}%; background-color:#b91c1c;"></div></div></td>
+                </tr>
             </table>
-            <div class="visual-container">
-                <div class="image-placeholder">
-                    <img src="{{ data.images.spem_hs4 }}" alt="HS4 Plot">
-                </div>
+            <div class="prediction-note">
+                Decision-support output from the deployed model, generated from the 59 extracted oculomotor features in this report. Not a standalone clinical diagnosis.
             </div>
+        </div>
+        {% else %}
+        <div class="prediction-box unavailable">
+            <strong>Model prediction unavailable for this session.</strong>
+            <div class="prediction-note">Inference could not be completed (or was not run) for this session. The 59 extracted oculomotor features below were still recorded and are available for manual clinical review.</div>
+        </div>
+        {% endif %}
 
-            <h3 class="section-header">TASK 2.2: Lissajous Pursuit (LS2 - 0.2 Hz)</h3>
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>LS2_Mean_H_gain</td>
-                        <td>Horizontal Global Gain</td>
-                        <td>{{ data.metrics.LS2_Mean_H_gain }}</td>
-                        <td>0.85-1.10</td>
-                    </tr>
-                    <tr>
-                        <td>LS2_Mean_H_logSNR</td>
-                        <td>Horizontal logSNR</td>
-                        <td>{{ data.metrics.LS2_Mean_H_logSNR }}</td>
-                        <td>> 2.0</td>
-                    </tr>
-                    <tr>
-                        <td>LS2_Mean_H_RMSE</td>
-                        <td>Horizontal RMSE</td>
-                        <td>{{ data.metrics.LS2_Mean_H_RMSE }} px</td>
-                        <td>
-                            < 80.0</td>
-                    </tr>
-                    <tr>
-                        <td>LS2_SacNum</td>
-                        <td>Number of Saccades</td>
-                        <td>{{ data.metrics.LS2_SacNum }}</td>
-                        <td></td>
-                    </tr>
-                    <tr>
-                        <td>LS2_SacAmp</td>
-                        <td>Saccade Amplitude (deg)</td>
-                        <td>{{ data.metrics.LS2_SacAmp }}&deg;</td>
-                        <td>
-                            < 1.5&deg;</td>
-                    </tr>
-                </tbody>
-            </table>
-            <div class="visual-container">
-                <div class="image-placeholder">
-                    <img src="{{ data.images.spem_ls2 }}" alt="LS2 Plot">
-                </div>
+        <h3 class="section-header">TASK 1: Free-Viewing (FV) Analysis</h3>
+        
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>fv_spl_mean</td>
+                    <td>Scanpath Length (degrees)</td>
+                    <td>{{ data.metrics.fv_spl_mean }}</td>
+                    <td>600.0-1200.0</td>
+                </tr>
+                <tr>
+                    <td>fv_disp_mean</td>
+                    <td>Dispersion of Fixations</td>
+                    <td>{{ data.metrics.fv_disp_mean }}</td>
+                    <td>0.8-1.5</td>
+                </tr>
+                <tr>
+                    <td>fv_fnum_mean</td>
+                    <td>Number of Fixations</td>
+                    <td>{{ data.metrics.fv_fnum_mean }}</td>
+                    <td>18.0-28.0</td>
+                </tr>
+                <tr>
+                    <td>fv_fdur_mean</td>
+                    <td>Fixation Duration (ms)</td>
+                    <td>{{ data.metrics.fv_fdur_mean }} ms</td>
+                    <td>200.0-350.0</td>
+                </tr>
+                <tr>
+                    <td>fv_snum_mean</td>
+                    <td>Number of Saccades</td>
+                    <td>{{ data.metrics.fv_snum_mean }}</td>
+                    <td>17.0-27.0</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="visual-container">
+            <div class="visual-header">Gaze Scanpath Heatmap</div>
+            <div class="image-placeholder">
+                <img src="{{ data.images.heatmap }}" alt="FV Heatmap">
             </div>
-
-            <div class="page-footer"></div>
         </div>
 
-        <!-- PAGE 3 -->
-        <div class="page">
-            <div class="clinic-header">
-                <div>
-                    <h1>NAINA</h1>
-                    <h2>Smooth Pursuit Analysis - B</h2>
-                </div>
+        <div class="remarks-container">
+            <strong>Clinical Remarks:</strong> 
+            Gaze behavior demonstrates exploratory characteristics. Fixation counts and durations fall relative to normative ranges, reflecting natural visual processing and salience detection.
+        </div>
+        
+        <div class="page-footer"></div>
+    </div>
+
+    <!-- PAGE 2 -->
+    <div class="page page-spem-a">
+        <div class="clinic-header">
+            <div>
+                <h1>NAINA</h1>
+                <h2>Smooth Pursuit Analysis - A</h2>
             </div>
-
-            <h3 class="section-header">TASK 2.3: Lissajous Pursuit (LS4 - 0.4 Hz)</h3>
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>LS4_Mean_H_gain</td>
-                        <td>Horizontal Global Gain</td>
-                        <td>{{ data.metrics.LS4_Mean_H_gain }}</td>
-                        <td>0.80-1.20</td>
-                    </tr>
-                    <tr>
-                        <td>LS4_Mean_H_logSNR</td>
-                        <td>Horizontal logSNR</td>
-                        <td>{{ data.metrics.LS4_Mean_H_logSNR }}</td>
-                        <td>> 2.0</td>
-                    </tr>
-                    <tr>
-                        <td>LS4_Mean_H_RMSE</td>
-                        <td>Horizontal RMSE</td>
-                        <td>{{ data.metrics.LS4_Mean_H_RMSE }} px</td>
-                        <td>
-                            < 150.0</td>
-                    </tr>
-                    <tr>
-                        <td>LS4_SacNum</td>
-                        <td>Number of Saccades</td>
-                        <td>{{ data.metrics.LS4_SacNum }}</td>
-                        <td></td>
-                    </tr>
-                    <tr>
-                        <td>LS4_SacAmp</td>
-                        <td>Saccade Amplitude (deg)</td>
-                        <td>{{ data.metrics.LS4_SacAmp }}&deg;</td>
-                        <td>
-                            < 2.5&deg;</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <div class="visual-container">
-                <div class="image-placeholder">
-                    <img src="{{ data.images.spem_ls4 }}" alt="LS4 Plot">
-                </div>
-            </div>
-
-            <div class="remarks-container">
-                <strong>Smooth Pursuit Combined Remarks:</strong>
-                Pursuit tracking efficiency is noted across frequencies. Gain values and RMSE reflect target predictive
-                tracking capability. Saccadic intrusions align with physiologic responses to target velocity changes.
-            </div>
-
-            <div class="page-footer"></div>
         </div>
 
-        <!-- PAGE 4 -->
-        <div class="page">
-            <div class="clinic-header">
-                <div>
-                    <h1>NAINA</h1>
-                    <h2>Fixation Stability Analysis</h2>
-                </div>
+        <h3 class="section-header">TASK 2.1: Horizontal Smooth Pursuit (HS4 - 0.4 Hz)</h3>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>HS4_Mean_H_gain</td><td>Horizontal Global Gain</td><td>{{ data.metrics.HS4_Mean_H_gain }}</td><td>0.85-1.10</td></tr>
+                <tr><td>HS4_Mean_H_logSNR</td><td>log Signal to Noise Ratio</td><td>{{ data.metrics.HS4_Mean_H_logSNR }}</td><td>> 2.0</td></tr>
+                <tr><td>HS4_Mean_H_RMSE</td><td>Root Mean Square Error</td><td>{{ data.metrics.HS4_Mean_H_RMSE }} px</td><td>< 120.0</td></tr>
+                <tr><td>HS4_SacNum</td><td>Number of Saccades</td><td>{{ data.metrics.HS4_SacNum }}</td><td></td></tr>
+                <tr><td>HS4_SacAmp</td><td>Saccade Amplitude (deg)</td><td>{{ data.metrics.HS4_SacAmp }}&deg;</td><td>< 2.0&deg;</td></tr>
+            </tbody>
+        </table>
+        <div class="visual-container">
+            <div class="image-placeholder">
+                <img src="{{ data.images.spem_hs4 }}" alt="HS4 Plot">
             </div>
+        </div>
 
-            <h3 class="section-header">TASK 3.1: Single Target Conditions</h3>
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>fix_fs_fd</td>
-                        <td>Fixation Duration (ms)</td>
-                        <td>{{ data.metrics.fix_fs_fd }} ms</td>
-                        <td>> 500 ms</td>
-                    </tr>
-                    <tr>
-                        <td>fix_fs_sn</td>
-                        <td>Number of Saccades</td>
-                        <td>{{ data.metrics.fix_fs_sn }}</td>
-                        <td>
-                            < 20</td>
-                    </tr>
-                    <tr>
-                        <td>fix_fs_sa</td>
-                        <td>Saccade Amplitude (deg)</td>
-                        <td>{{ data.metrics.fix_fs_sa }}&deg;</td>
-                        <td>
-                            < 1.5&deg;</td>
-                    </tr>
-                    <tr>
-                        <td>fix_fs_spl</td>
-                        <td>Scanpath Length (deg)</td>
-                        <td>{{ data.metrics.fix_fs_spl }}</td>
-                        <td></td>
-                    </tr>
-                </tbody>
-            </table>
+        <h3 class="section-header">TASK 2.2: Lissajous Pursuit (LS2 - 0.2 Hz)</h3>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>LS2_Mean_H_gain</td><td>Horizontal Global Gain</td><td>{{ data.metrics.LS2_Mean_H_gain }}</td><td>0.85-1.10</td></tr>
+                <tr><td>LS2_Mean_H_logSNR</td><td>Horizontal logSNR</td><td>{{ data.metrics.LS2_Mean_H_logSNR }}</td><td>> 2.0</td></tr>
+                <tr><td>LS2_Mean_H_RMSE</td><td>Horizontal RMSE</td><td>{{ data.metrics.LS2_Mean_H_RMSE }} px</td><td>< 80.0</td></tr>
+                <tr><td>LS2_SacNum</td><td>Number of Saccades</td><td>{{ data.metrics.LS2_SacNum }}</td><td></td></tr>
+                <tr><td>LS2_SacAmp</td><td>Saccade Amplitude (deg)</td><td>{{ data.metrics.LS2_SacAmp }}&deg;</td><td>< 1.5&deg;</td></tr>
+            </tbody>
+        </table>
+        <div class="visual-container">
+            <div class="image-placeholder">
+                <img src="{{ data.images.spem_ls2 }}" alt="LS2 Plot">
+            </div>
+        </div>
 
-            <h3 class="section-header">TASK 3.2: Distracter Target Conditions</h3>
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>fix_fd_fd</td>
-                        <td>Fixation Duration (ms)</td>
-                        <td>{{ data.metrics.fix_fd_fd }} ms</td>
-                        <td>> 800 ms</td>
-                    </tr>
-                    <tr>
-                        <td>fix_fd_sn</td>
-                        <td>Number of Saccades</td>
-                        <td>{{ data.metrics.fix_fd_sn }}</td>
-                        <td>
-                            < 10</td>
-                    </tr>
-                    <tr>
-                        <td>fix_fd_sa</td>
-                        <td>Saccade Amplitude (deg)</td>
-                        <td>{{ data.metrics.fix_fd_sa }}&deg;</td>
-                        <td>
-                            < 2.0&deg;</td>
-                    </tr>
-                    <tr>
-                        <td>fix_fd_spl</td>
-                        <td>Scanpath Length (deg)</td>
-                        <td>{{ data.metrics.fix_fd_spl }}</td>
-                        <td></td>
-                    </tr>
-                </tbody>
-            </table>
+        <div class="page-footer"></div>
+    </div>
 
-            <div class="visual-container">
-                <div class="visual-header">Gaze Stability Spatial Plot</div>
-                <div class="image-placeholder">
-                    <!-- Side-by-side layout to accommodate both original variables (Pure & Distractor) -->
-                    <div class="image-split">
-                        <div>
-                            <img src="{{ data.images.fix_pure }}" alt="GAZE SCATTER PURE TRIALS">
-                        </div>
-                        <div>
-                            <img src="{{ data.images.fix_dist }}" alt="GAZE SCATTER DISTRACTOR TRIALS">
-                        </div>
+    <!-- PAGE 3 -->
+    <div class="page">
+        <div class="clinic-header">
+            <div>
+                <h1>NAINA</h1>
+                <h2>Smooth Pursuit Analysis - B</h2>
+            </div>
+        </div>
+
+        <h3 class="section-header">TASK 2.3: Lissajous Pursuit (LS4 - 0.4 Hz)</h3>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>LS4_Mean_H_gain</td><td>Horizontal Global Gain</td><td>{{ data.metrics.LS4_Mean_H_gain }}</td><td>0.80-1.20</td></tr>
+                <tr><td>LS4_Mean_H_logSNR</td><td>Horizontal logSNR</td><td>{{ data.metrics.LS4_Mean_H_logSNR }}</td><td>> 2.0</td></tr>
+                <tr><td>LS4_Mean_H_RMSE</td><td>Horizontal RMSE</td><td>{{ data.metrics.LS4_Mean_H_RMSE }} px</td><td>< 150.0</td></tr>
+                <tr><td>LS4_SacNum</td><td>Number of Saccades</td><td>{{ data.metrics.LS4_SacNum }}</td><td></td></tr>
+                <tr><td>LS4_SacAmp</td><td>Saccade Amplitude (deg)</td><td>{{ data.metrics.LS4_SacAmp }}&deg;</td><td>< 2.5&deg;</td></tr>
+            </tbody>
+        </table>
+        
+        <div class="visual-container">
+            <div class="image-placeholder">
+                <img src="{{ data.images.spem_ls4 }}" alt="LS4 Plot">
+            </div>
+        </div>
+
+        <div class="remarks-container">
+            <strong>Smooth Pursuit Combined Remarks:</strong> 
+            Pursuit tracking efficiency is noted across frequencies. Gain values and RMSE reflect target predictive tracking capability. Saccadic intrusions align with physiologic responses to target velocity changes.
+        </div>
+
+        <div class="page-footer"></div>
+    </div>
+
+    <!-- PAGE 4 -->
+    <div class="page">
+        <div class="clinic-header">
+            <div>
+                <h1>NAINA</h1>
+                <h2>Fixation Stability Analysis</h2>
+            </div>
+        </div>
+
+        <h3 class="section-header">TASK 3.1: Single Target Conditions</h3>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>fix_fs_fd</td><td>Fixation Duration (ms)</td><td>{{ data.metrics.fix_fs_fd }} ms</td><td>> 500 ms</td></tr>
+                <tr><td>fix_fs_sn</td><td>Number of Saccades</td><td>{{ data.metrics.fix_fs_sn }}</td><td>< 20</td></tr>
+                <tr><td>fix_fs_sa</td><td>Saccade Amplitude (deg)</td><td>{{ data.metrics.fix_fs_sa }}&deg;</td><td>< 1.5&deg;</td></tr>
+                <tr><td>fix_fs_spl</td><td>Scanpath Length (deg)</td><td>{{ data.metrics.fix_fs_spl }}</td><td></td></tr>
+            </tbody>
+        </table>
+
+        <h3 class="section-header">TASK 3.2: Distracter Target Conditions</h3>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>fix_fd_fd</td><td>Fixation Duration (ms)</td><td>{{ data.metrics.fix_fd_fd }} ms</td><td>> 800 ms</td></tr>
+                <tr><td>fix_fd_sn</td><td>Number of Saccades</td><td>{{ data.metrics.fix_fd_sn }}</td><td>< 10</td></tr>
+                <tr><td>fix_fd_sa</td><td>Saccade Amplitude (deg)</td><td>{{ data.metrics.fix_fd_sa }}&deg;</td><td>< 2.0&deg;</td></tr>
+                <tr><td>fix_fd_spl</td><td>Scanpath Length (deg)</td><td>{{ data.metrics.fix_fd_spl }}</td><td></td></tr>
+            </tbody>
+        </table>
+
+        <div class="visual-container">
+            <div class="visual-header">Gaze Stability Spatial Plot</div>
+            <div class="image-placeholder">
+                <!-- Side-by-side layout to accommodate both original variables (Pure & Distractor) -->
+                <div class="image-split">
+                    <div>
+                        <img src="{{ data.images.fix_pure }}" alt="GAZE SCATTER PURE TRIALS">
+                    </div>
+                    <div>
+                        <img src="{{ data.images.fix_dist }}" alt="GAZE SCATTER DISTRACTOR TRIALS">
                     </div>
                 </div>
             </div>
-
-            <div class="remarks-container">
-                <strong>Fixation Remarks:</strong>
-                Fixation stability metrics maintained relative to distractor presentations. Inhibitory control
-                mechanisms reflect ability to suppress reflexive saccades towards transient distractors.
-            </div>
-
-            <div class="page-footer"></div>
         </div>
 
-        <!-- PAGE 5 -->
-        <div class="page">
-            <div class="clinic-header">
-                <div>
-                    <h1>NAINA</h1>
-                    <h2>Inhibitory Control &amp; Final Metrics</h2>
-                </div>
-            </div>
-
-            <h3 class="section-header">TASK 4: Antisaccade Task</h3>
-            <table class="results-table">
-                <thead>
-                    <tr>
-                        <th>Metric ID</th>
-                        <th>Metric Description</th>
-                        <th>Patient Value</th>
-                        <th>Healthy Range (HC)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>56</td>
-                        <td>antisaccade_error_rate</td>
-                        <td>{{ (data.metrics.antisaccade_error_rate * 100) | round(1) }}%</td>
-                        <td>
-                            < 25%</td>
-                    </tr>
-                    <tr>
-                        <td>57</td>
-                        <td>antisaccade_correction_error_rate</td>
-                        <td>{{ (data.metrics.antisaccade_correction_error_rate * 100) | round(1) }}%</td>
-                        <td>
-                            < 10%</td>
-                    </tr>
-                    <tr>
-                        <td>58</td>
-                        <td>antisaccade_latency</td>
-                        <td>{{ data.metrics.antisaccade_latency }} ms</td>
-                        <td>250-400 ms</td>
-                    </tr>
-                    <tr>
-                        <td>59</td>
-                        <td>antisaccade_accuracy</td>
-                        <td>{{ (data.metrics.antisaccade_accuracy * 100) | round(1) }}%</td>
-                        <td>> 0.85</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <div class="remarks-container" style="margin-top: 30px;">
-                <strong>Final Summary:</strong>
-                The subject displays oculomotor control metrics as recorded. Antisaccade performance and tracking
-                capabilities reflect specific top-down inhibitory mechanisms.
-                <br><br>
-                This report contains the binary model inference and all 59 oculomotor features. The result is decision-support output and is not a standalone clinical diagnosis.
-            </div>
-
-            {% if data.doctor_notes and data.doctor_notes|length > 0 %}
-            <div class="diagnosis-line" style="margin-top: 15px; border-color: #0056b3; background-color: #f0f7ff;">
-                <strong style="color: #0056b3;">Clinician's Notes:</strong><br>
-                <div style="margin-top: 8px; color: #333; font-size: 10pt; line-height: 1.5;">{{ data.doctor_notes }}
-                </div>
-            </div>
-            {% endif %}
-
-            <div class="diagnosis-line">
-                Report Mode:<br>
-                <strong>Model Inference — Binary Classification</strong>
-            </div>
-
-            <div style="margin-top: 60px; display: flex; justify-content: space-between; font-size: 10pt;">
-                <div style="border-top: 1px solid #000; width: 40%; text-align: center; padding-top: 5px;">Clinician
-                    Signature</div>
-                <div style="border-top: 1px solid #000; width: 40%; text-align: center; padding-top: 5px;">Date</div>
-            </div>
-
-            <div class="page-footer"></div>
+        <div class="remarks-container">
+            <strong>Fixation Remarks:</strong> 
+            Fixation stability metrics maintained relative to distractor presentations. Inhibitory control mechanisms reflect ability to suppress reflexive saccades towards transient distractors.
         </div>
 
+        <div class="page-footer"></div>
     </div>
-</body>
 
+    <!-- PAGE 5 -->
+    <div class="page">
+        <div class="clinic-header">
+            <div>
+                <h1>NAINA</h1>
+                <h2>Inhibitory Control & Final Metrics</h2>
+            </div>
+        </div>
+
+        <h3 class="section-header">TASK 4: Antisaccade Task</h3>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Metric ID</th>
+                    <th>Metric Description</th>
+                    <th>Patient Value</th>
+                    <th>Healthy Range (HC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>56</td>
+                    <td>antisaccade_error_rate</td>
+                    <td>{{ (data.metrics.antisaccade_error_rate * 100) | round(1) }}%</td>
+                    <td>< 25%</td>
+                </tr>
+                <tr>
+                    <td>57</td>
+                    <td>antisaccade_correction_error_rate</td>
+                    <td>{{ (data.metrics.antisaccade_correction_error_rate * 100) | round(1) }}%</td>
+                    <td>< 10%</td>
+                </tr>
+                <tr>
+                    <td>58</td>
+                    <td>antisaccade_latency</td>
+                    <td>{{ data.metrics.antisaccade_latency }} ms</td>
+                    <td>250-400 ms</td>
+                </tr>
+                <tr>
+                    <td>59</td>
+                    <td>antisaccade_accuracy</td>
+                    <td>{{ (data.metrics.antisaccade_accuracy * 100) | round(1) }}%</td>
+                    <td>> 0.85</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="remarks-container" style="margin-top: 30px;">
+            <strong>Final Summary:</strong>
+            The subject displays oculomotor control metrics as recorded. Antisaccade performance and tracking capabilities reflect specific top-down inhibitory mechanisms.
+            <br><br>
+            This report contains the binary model inference and all 59 oculomotor features. The result is decision-support output and is not a standalone clinical diagnosis.
+        </div>
+
+        {% if data.doctor_notes and data.doctor_notes|length > 0 %}
+        <div class="diagnosis-line" style="margin-top: 15px; border-color: #0056b3; background-color: #f0f7ff;">
+            <strong style="color: #0056b3;">Clinician's Notes:</strong><br>
+            <div style="margin-top: 8px; color: #333; font-size: 10pt; line-height: 1.5;">{{ data.doctor_notes }}</div>
+        </div>
+        {% endif %}
+
+        <div class="diagnosis-line">
+            Report Mode:<br>
+            <strong>Model Inference — Binary Classification</strong>
+        </div>
+
+        <div style="margin-top: 60px; display: flex; justify-content: space-between; font-size: 10pt;">
+            <div style="border-top: 1px solid #000; width: 40%; text-align: center; padding-top: 5px;">Clinician Signature</div>
+            <div style="border-top: 1px solid #000; width: 40%; text-align: center; padding-top: 5px;">Date</div>
+        </div>
+
+        <div class="page-footer"></div>
+    </div>
+
+</div>
+</body>
 </html>

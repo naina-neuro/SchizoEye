@@ -456,11 +456,27 @@ def _internal_generate_pdf(data):
         # Add PANSS score to data (ensure it's present)
         if 'panss_score' not in data:
             data['panss_score'] = 'Not recorded'
-        
-        # No AI predictions in data collection mode — omit predictions block
+
+        # FIX PDF-1: report_template.html now renders a "Model Prediction
+        # Summary" box on page 1 from data.prediction (label, confidence,
+        # healthy_probability, schizophrenia_probability). Callers that
+        # don't have a prediction (inference failed, or this is a raw
+        # feature-only save) simply omit the key; the template's
+        # {% if data.prediction %} branch renders a plain "unavailable"
+        # notice instead of a blank/missing section either way.
+        data.setdefault('prediction', None)
 
         rendered_html = render_template("report_template.html", data=data)
-        return HTML(string=rendered_html).write_pdf(pdf_variant='pdf/a-1b')
+        # FIX PDF-2: pdf_variant='pdf/a-1b' is a strict archival PDF profile
+        # that requires every embedded raster image to carry its own ICC
+        # colour profile. The heatmap (matplotlib), SPEM plots (Plotly PNG),
+        # and fixation scatters (<canvas> toDataURL) here are all generated
+        # on the fly and never carry one, so WeasyPrint's PDF/A pass was
+        # silently dropping every one of them from the output — the PDF
+        # itself still generated fine, just with none of the visuals. This
+        # app has no actual archival-compliance requirement, so a plain PDF
+        # (no forced variant) is used instead and the images render.
+        return HTML(string=rendered_html).write_pdf()
     except Exception as e:
         traceback.print_exc()
         raise e
@@ -617,6 +633,7 @@ def download_session_pdf(session_id):
                 },
                 'panss_score': res.get('panss_score') or 'Not recorded',   # ← WAS MISSING
                 'metrics': res.get('features', {}),
+                'prediction': res.get('prediction'),  # FIX PDF-1
                 'doctor_notes': doc.get('notes', ''),                       # ← WAS MISSING
                 'fv_gaze': [],
                 'images': {}
@@ -789,6 +806,7 @@ def save_results():
                 },
                 'panss_score': data.get('panss_score') or 'Not recorded',   # ← ADD THIS LINE
                 'metrics': data.get('features', {}),
+                'prediction': data.get('prediction'),  # FIX PDF-1
                 'fv_gaze': data.get('fv_gaze', []),
                 'doctor_notes': data.get('notes', ''),
                 'images': {
@@ -829,7 +847,11 @@ def save_results():
             },
             "results": {
                 "panss_score": data.get('panss_score'),  # store as-is (None/null → None in Mongo)
-                "features": data.get('features', {})
+                "features": data.get('features', {}),
+                "prediction": data.get('prediction')  # FIX PDF-1: persist so the
+                # dashboard's "View Report"/"Download PDF" and the notes-save
+                # PDF-regeneration path (save_notes(), below) can still show
+                # the model result later, not just at the moment of saving.
             },
             "notes": data.get('notes', ""),
             "notes_author": data.get('notes_author', "unknown"),
@@ -909,6 +931,7 @@ def save_notes(session_id):
                 },
                 'panss_score': res.get('panss_score') or 'Not recorded',
                 'metrics': res.get('features', {}),
+                'prediction': res.get('prediction'),  # FIX PDF-1
                 'doctor_notes': notes,   # ← the NEW notes
                 'fv_gaze': [],
                 'images': {}
