@@ -42,13 +42,12 @@ iris landmarks and a per-session ridge-regression calibration.
 └─────────────────────────┘        └──────────────────────────┘
 ```
 
-- **Frontend** — a single-page app (`index.html`) with no build step and no
-  framework. Gaze estimation, calibration, all three tasks, results
+- **Frontend** — Gaze estimation, calibration, all three tasks, results
   rendering, and the entire 59-feature extraction pipeline run in the
   browser. The backend only ever sees the final extracted features (plus raw
   gaze CSVs and rendered chart images) over HTTPS.
 - **Backend** — a single Flask app (`app.py`) that classifies feature
-  vectors with a pre-trained, isotonic-calibrated XGBoost model, persists
+  vectors with a pre-trained XGBoost model, persists
   sessions to MongoDB Atlas (raw gaze as GridFS CSVs, generated PDF reports
   as GridFS binaries), and renders PDF reports with WeasyPrint from a Jinja
   template (`report_template.html`).
@@ -65,15 +64,14 @@ iris landmarks and a per-session ridge-regression calibration.
 |---|---|
 | `index.html` | Entry point. Login, doctor/admin/clinician dashboards, all in-battery screens (camera check, calibration guide, SPEM canvas, SchizoEye canvas, free-viewing stage, results screen), and the dashboard's report/notes/feature modals. |
 | `config.js` | Resolves the backend API base URL (`localhost:5000` in local dev, the deployed Render URL otherwise). |
-| `camera-check.js` | Step 1 of the protocol: live framing/lighting scoring against the real camera feed EyeTracker is already using (no second `getUserMedia` call), plus an infrared-camera detector and camera picker. |
+| `camera-check.js` | Step 1 of the protocol: live framing/lighting scoring against the real camera feed EyeTracker is already using, plus an infrared-camera detector and camera picker. |
 | `eye-tracker.js` | The gaze engine (`EyeTracker` global). Owns the camera, the MediaPipe FaceMesh detection loop, the 20-point calibration UI + held-out validation, the Kalman-filtered gaze stream, and `onGaze()`/`isEmitting()` for consumers. |
-| `gaze-collector.js` | `RawGazeCollector` — records raw gaze samples during the free-viewing task via a push subscription to `EyeTracker.onGaze()`. |
+| `gaze-collector.js` | `RawGazeCollector` — records raw gaze samples via a push subscription to `EyeTracker.onGaze()`. |
 | `battery-controller.js` | The main orchestrator (`BatteryController`). Runs all three tasks, renders the results screen (Plotly graphs, scatter plots, clinical flags), and contains the full 59-feature extraction pipeline (a pure-JS port of the training-time feature code) plus the classify/save/PDF pipeline. |
 | `feature_extractor.html` | Standalone offline tool: replay three raw gaze CSVs from a past session through the same extraction pipeline (useful for auditing feature math without re-running a live test). |
 | `app.py` | Flask backend: auth, `/classify`, `/save_results`, `/sessions*`, `/analytics`, `/generate-report`. |
 | `report_template.html` | Jinja/HTML template WeasyPrint renders into the clinical PDF report. |
 | `retrain_fixed.ipynb` | Model training notebook — trains a plain and an isotonic-calibrated XGBoost classifier on the 59-feature synthetic dataset and exports the artifacts `app.py` loads. |
-| `INTEGRATION.md` | Historical fix log for a specific past integration pass (calibration rewrite, camera-check rewrite, sampling-rate unification, backend wake/retry, `/classify` 405→200, model-file and template-path fixes). Kept as a detailed record of *why* things are shaped the way they are; this README is the current-state map. |
 
 ---
 
@@ -137,9 +135,7 @@ training data:
 - **Units** — everything spatial is converted from pixels to degrees of
   visual angle using the session's own `pxPerDeg` (derived from the
   screen-diagonal input the operator provides and the actual viewport
-  size), not a hardcoded reference value — this was a real bug
-  (`FIX BC-MATH-6`) that silently skewed every session where the real
-  screen differed from the ~15.6"-at-60cm assumption.
+  size), not a hardcoded reference value.
 - **Bounds & data-quality flags** — every feature is clamped to a
   physiologically plausible range; a feature that had genuinely
   insufficient data to compute falls back to a neutral bound-midpoint
@@ -190,7 +186,6 @@ Set these on the backend (Render):
 | `MONGODB_URI` | Yes | Atlas connection string. Without it, every DB-backed route (`/sessions*`, `/save_results`, `/analytics`) returns 503. |
 | `MONGODB_DB_NAME` | No (default `SchizoEye`) | Must resolve to a database literally named `SchizoEye` — `_get_scoped_database()` refuses anything else. |
 | `SECRET_KEY` | Recommended | Flask session signing key. A random one is generated per-process if unset, which invalidates sessions on every restart. |
-| `ADMIN_PASSWORD` / `DOCTOR_PASSWORD` / `CLINICIAN_PASSWORD` | Recommended | Override the `admin123`/`doctor123`/`clinician123` defaults for the three built-in accounts. |
 | `CORS_ORIGINS` | If frontend origin changes | Comma-separated extra allowed origins, added on top of the hardcoded Netlify/localhost defaults. Netlify deploy previews (`https://<hash>--naina-schizo.netlify.app`) are already matched by regex. |
 | `INTEGRATION_API_KEY` | For partner-site embedding | Required header (`X-Integration-Key`) on `POST /integration/test-sessions` to mint a `?token=` test link for a patient with no login session. |
 | `TEST_FRONTEND_URL` | For partner-site embedding | Base URL used to build the `test_url` returned by the integration endpoint. |
@@ -209,10 +204,9 @@ Set this on the frontend (Netlify), or edit `config.js` directly:
 - **Frontend** — static deploy on Netlify, no build step.
 - **Backend** — Render, Docker build with `backend/` as the build context
   (so `backend/templates/report_template.html` must exist *inside*
-  `backend/`, not only in a sibling `frontend/templates/` — a real past
-  bug, see `INTEGRATION.md` §9b). Start command:
+  `backend/`, not only in a sibling `frontend/templates/`). Start command:
 
-  ```
+  ```r
   gunicorn app:app --workers 1 --threads 4 --timeout 180 --graceful-timeout 30
   ```
 
@@ -243,43 +237,3 @@ All routes are on the Flask backend (`app.py`).
 | `/analytics` | GET | Aggregates for the admin dashboard's charts (daily volume, PANSS/age/gender distributions, feature averages). |
 | `/generate-report` | POST | Stateless PDF generation from a caller-supplied payload — used by the results screen's "Download PDF Report" button, which already has fresh chart images in the DOM. |
 
----
-
-## Known limitations / roadmap
-
-- **Synthetic training data gain-variance artifact.** The pursuit "gain"
-  features are nearly constant across classes in the current synthetic
-  training set, which both candidate models (XGBoost, CatBoost) can latch
-  onto as a spurious signal — CatBoost more so. Needs a data-generator fix
-  and a retrain before either model's `gain`-feature reliance can be
-  trusted. XGBoost (the currently deployed model) is the safer choice in
-  the meantime.
-- **Decision-support only.** No model output here should be treated as a
-  standalone diagnosis — see the disclaimer baked into
-  `report_template.html` and the results-screen prediction card.
-- **Single-worker backend.** WeasyPrint + matplotlib inside a free-tier
-  Render dyno constrains the backend to one gunicorn worker; a burst of
-  concurrent `/save_results` calls will queue rather than parallelize.
-
----
-
-## Where to look when something breaks
-
-- **Camera opens twice / a second calibration screen appears / lighting
-  card shows words instead of numbers / `FV:0 SPEM:0 SZ:0`** — these were
-  all real bugs, fixed and explained in detail (root cause, not just the
-  patch) in `INTEGRATION.md` §§1–3.
-- **`Failed to fetch` on save, `/classify` 405 or 503, `TemplateNotFound`
-  for the PDF template** — `INTEGRATION.md` §§4, 8, 9.
-- **A generated PDF has no images from the dashboard even though it did
-  right after the test** — chart/scatter/heatmap images were historically
-  only ever embedded directly into the PDF binary at save time, never
-  persisted anywhere else; any later PDF regeneration (most commonly
-  saving clinician notes) rebuilt the PDF with no images to embed and
-  discarded the original. Fixed by persisting the images on the session
-  document (`results.images`) so every regeneration path reuses them.
-- **Anything involving the 59-feature math itself** (thresholds, bounds,
-  unit conversions) — every non-obvious constant in `battery-controller.js`
-  and `feature_extractor.html` is commented in place with a `FIX BC-MATH-N`
-  tag explaining what was wrong and why the new value is right; search for
-  that prefix before changing a threshold.
