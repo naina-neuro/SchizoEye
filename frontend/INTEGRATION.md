@@ -680,3 +680,70 @@ single detail is why the error looked like a routing bug rather than a missing e
 
 Nothing else in the file changed; this was pulled from the same base file you have
 deployed, so it's a straight swap.
+
+---
+
+## 9. `/classify` 503 + `TemplateNotFound: report_template.html`
+
+Two separate filesystem mismatches, both visible in your file tree screenshot.
+
+### 9a. 503 — "Classifier not available"
+
+Your `backend/model_artifacts/` contains:
+
+```
+feature_names.pkl
+label_encoder.pkl
+model_calibrated.pkl      ← not model.pkl
+```
+
+`retrain_fixed.py` saves **two** model files: `model.pkl` (plain XGBClassifier) and
+`model_calibrated.pkl` (the same model wrapped in a 5-fold isotonic
+`CalibratedClassifierCV`, built specifically — per that script's own comment — "so
+confidence values are trustworthy"). Only the calibrated one was copied into
+`model_artifacts/`. `app.py` was hardcoded to look for `model.pkl`, got
+`FileNotFoundError`, logged the `[WARN]`, and `/classify` correctly refused with 503
+rather than silently running with nothing loaded.
+
+Fixed by making the loader check `model_calibrated.pkl` first, then fall back to
+`model.pkl`. Calibrated is preferred on purpose, not just as a fallback: raw
+tree-based probabilities tend to be overconfident, and the results screen now shows
+the Healthy/Schizophrenia percentages as the headline — those numbers should be the
+calibrated ones. `CalibratedClassifierCV.predict_proba()` has the identical
+signature to the plain model's, so nothing else in `/classify` needed to change.
+You don't need to add `model.pkl` at all; what's already in the folder is enough.
+
+### 9b. `TemplateNotFound: report_template.html`
+
+```python
+FRONTEND_DIR = os.path.join(BASE, '..', 'frontend')
+TEMPLATE_DIR = os.path.join(FRONTEND_DIR, 'templates')
+```
+
+This reaches for a `frontend/` folder that is a **sibling** of `backend/` in your
+repo. Render builds the Dockerfile with `backend/` as the build context (your
+`Dockerfile` lives at `backend/Dockerfile`), so the built image only ever contains
+what's inside `backend/`. `../frontend/templates/report_template.html` doesn't
+exist inside that image at all — not "wrong path", genuinely absent — hence
+`TemplateNotFound` rather than a permissions or path-typo error.
+
+Your repo already has a second `templates/` folder directly under `backend/` (visible
+in your file tree, collapsed). That's the one Flask can actually reach. Fixed by
+pointing `TEMPLATE_DIR` at `BASE/templates` instead of the unreachable sibling, and
+dropping `static_folder`/`static_url_path='/'` entirely — this backend never serves
+the frontend's HTML/JS (that's Netlify's job), and that catch-all static route was
+also what turned the missing `/classify` route into a confusing 405 instead of a
+plain 404 a few messages ago. Removing it is one less thing that can silently
+swallow a future route the same way.
+
+**Action needed on your side:** make sure `report_template.html` is committed at
+`backend/templates/report_template.html`, not only under `frontend/templates/`. If
+your `backend/templates/` folder is currently empty, copy the file there — that's
+the only piece I can't do from here since I don't have write access to your repo.
+
+### Redeploy checklist
+
+After pushing:
+1. Render log should show `[OK] Classifier loaded from model_calibrated.pkl (59 features) in /app/model_artifacts` — not `[WARN]`.
+2. Run a session end to end; `/classify` should return 200 and the prediction card should render.
+3. Click **Download PDF Report** — no more `TemplateNotFound` in the log, and a PDF should download.
