@@ -54,7 +54,7 @@ app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, st
 # supports_credentials=True means "*" is not legal here — every origin must be
 # listed explicitly (Netlify deploy previews are matched by regex below).
 _DEFAULT_ORIGINS = [
-    "https://naina-schizo.netlify.app",      # production frontend 
+    "https://naina-schizo.netlify.app",      # production frontend
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "http://localhost:5500",
@@ -229,10 +229,24 @@ def _ensure_indexes():
 
 init_mongodb()
 
-# ── MODEL LOADING (disabled — data collection mode) ──
-# Models are not used in data collection mode.
-label_encoder = classifier = regressor = None
-print("[INFO] Running in data collection mode — ML models disabled")
+# ── MODEL LOADING ──
+# Drop model.pkl / label_encoder.pkl / feature_names.pkl into backend/model_artifacts/
+# (next to this file) — see classify_endpoint_snippet.py, which this section
+# and the /classify route below are adapted from.
+_MODEL_DIR = os.path.join(BASE, 'model_artifacts')
+_clf = _label_encoder_clf = _feature_names = None
+try:
+    _clf               = joblib.load(os.path.join(_MODEL_DIR, 'model.pkl'))
+    _label_encoder_clf = joblib.load(os.path.join(_MODEL_DIR, 'label_encoder.pkl'))
+    _feature_names     = joblib.load(os.path.join(_MODEL_DIR, 'feature_names.pkl'))
+    print(f"[OK] XGBoost classifier loaded ({len(_feature_names)} features) from {_MODEL_DIR}")
+except Exception as e:
+    print(f"[WARN] Classifier not loaded from {_MODEL_DIR}: {e}")
+
+# Kept for anything elsewhere that still imports these names.
+label_encoder = _label_encoder_clf
+classifier = _clf
+regressor = None
 
 REQUIRED_FEATURES = [
     'fv_fnum_mean', 'fv_fdur_mean', 'fv_snum_mean', 'fv_sdur_mean', 'fv_samp_mean',
@@ -249,6 +263,74 @@ REQUIRED_FEATURES = [
     'antisaccade_error_rate', 'antisaccade_correction_error_rate',
     'antisaccade_latency', 'antisaccade_accuracy'
 ]
+
+# Column order the model was actually trained on, when available — this is
+# what predict_proba() must be fed in, and it is not guaranteed to match the
+# hand-maintained REQUIRED_FEATURES list above if the model is ever retrained
+# with a different feature set.
+_CLASSIFY_FEATURE_ORDER = _feature_names if _feature_names else REQUIRED_FEATURES
+
+
+@app.route('/classify', methods=['POST'])
+def classify():
+    """
+    Body: { "features": { <feature_name>: <value>, ... } }
+    Returns the predicted label, its confidence, per-class probabilities
+    (so the frontend can show a Healthy-vs-Schizophrenia split), and which
+    features (if any) were missing and therefore treated as NaN by the model
+    rather than a real measurement.
+
+    This route did not exist before, which is why calls to it were coming
+    back as HTTP 405: with static_url_path='/', a POST to an unmatched path
+    still matches Flask's static-file route (methods GET/HEAD/OPTIONS only),
+    so it fails with "Method Not Allowed" instead of a plain 404.
+    """
+    if _clf is None or _label_encoder_clf is None:
+        return jsonify({
+            'success': False,
+            'error': f'Classifier not available on this server (looked in {_MODEL_DIR}). '
+                     'Confirm model.pkl, label_encoder.pkl and feature_names.pkl were deployed there.'
+        }), 503
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        features = data.get('features', {})
+        if not isinstance(features, dict) or not features:
+            return jsonify({'success': False, 'error': 'No features provided'}), 400
+
+        missing = [c for c in _CLASSIFY_FEATURE_ORDER if features.get(c) is None]
+        row = pd.DataFrame([features]).reindex(columns=_CLASSIFY_FEATURE_ORDER)
+
+        probs = _clf.predict_proba(row)[0]
+        classes = _label_encoder_clf.classes_
+        prob_map = {str(c): float(p) for c, p in zip(classes, probs)}
+        pred_idx = int(np.argmax(probs))
+        pred_label = str(classes[pred_idx])
+        confidence = float(probs[pred_idx])
+
+        # Pull out Healthy / Schizophrenia explicitly (rather than making the
+        # frontend guess at label spelling) so the result card can show both
+        # percentages regardless of how label_encoder.classes_ is ordered.
+        healthy_p = next((p for c, p in prob_map.items() if c.lower().startswith('health')), None)
+        schizo_p  = next((p for c, p in prob_map.items() if 'schiz' in c.lower()), None)
+
+        return jsonify({
+            'success': True,
+            'prediction': {
+                'label': pred_label,
+                'confidence': confidence,
+                'healthy_probability': healthy_p,
+                'schizophrenia_probability': schizo_p,
+            },
+            'predicted_label': pred_label,
+            'confidence': confidence,
+            'class_probabilities': prob_map,
+            'missing_features': missing,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 
 # ── HEATMAP GENERATION FUNCTION ──
 def generate_heatmap_base64(fv_gaze_data):

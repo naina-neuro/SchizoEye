@@ -2568,15 +2568,23 @@ function cloneRows(rows) {
         if (!classifyResponse.ok || !classifyData.success) {
           throw new Error(classifyData.error || `Inference HTTP ${classifyResponse.status}`);
         }
+        if (!classifyData.prediction) {
+          // Tolerate a flatter response shape ({predicted_label, confidence, ...})
+          // instead of assuming every backend revision nests it under `prediction`.
+          classifyData.prediction = {
+            label: classifyData.predicted_label,
+            confidence: classifyData.confidence,
+          };
+        }
         _lastPrediction = classifyData.prediction;
         statusEl.textContent = `✓ Inference complete — ${classifyData.prediction.label}`;
-        renderPrediction(_lastPrediction);
-        document.getElementById('btn-dl-pdf').style.display = 'inline-block';
+        renderPrediction(classifyData.prediction, classifyData.class_probabilities);
       } catch (inferenceErr) {
         _lastPrediction = null;
         statusEl.textContent = `⚠ Inference unavailable — saving collected data anyway...`;
         console.warn('[BatteryController] Classification failed; continuing to save:', inferenceErr);
         if (typeof window.reportClientError === 'function') window.reportClientError('classification (non-blocking)', inferenceErr, `API: ${API_BASE}/classify`);
+        renderPredictionUnavailable(inferenceErr.message);
       }
 
       // This is intentionally outside the inference try/catch: once features
@@ -2601,12 +2609,77 @@ function cloneRows(rows) {
       FEATURE_ORDER.map(n => `<div style="break-inside:avoid;padding:2px 0"><span style="color:var(--dim)">${n}</span> <span style="color:var(--accent); font-weight:bold; float:right;">${features[n]}</span></div>`).join('') +
       '</div>';
     document.getElementById('ai-results-body').style.display = 'block';
+    // downloadPDFReport() only reads _lastFeatures/canvas snapshots — it never
+    // touches _lastPrediction — so the button belongs here, not behind a
+    // successful /classify call. That gating is exactly why it stayed hidden
+    // whenever inference failed even though a report could still be built.
+    const pdfBtn = document.getElementById('btn-dl-pdf');
+    if (pdfBtn) pdfBtn.style.display = 'inline-block';
   }
 
-  function renderPrediction(prediction) {
+  function _extractProbs(prediction, classProbabilities) {
+    let healthy = null, schizo = null;
+    if (prediction) {
+      if (typeof prediction.healthy_probability === 'number') healthy = prediction.healthy_probability;
+      if (typeof prediction.schizophrenia_probability === 'number') schizo = prediction.schizophrenia_probability;
+    }
+    if ((healthy === null || schizo === null) && classProbabilities) {
+      for (const [label, p] of Object.entries(classProbabilities)) {
+        const l = label.toLowerCase();
+        if (healthy === null && l.startsWith('health')) healthy = p;
+        if (schizo === null && l.includes('schiz')) schizo = p;
+      }
+    }
+    return { healthy, schizo };
+  }
+
+  function renderPrediction(prediction, classProbabilities) {
     const el = document.getElementById('ai-prediction-summary');
     if (!el || !prediction) return;
-    el.textContent = `Model result: ${prediction.label} (${(prediction.confidence * 100).toFixed(1)}% confidence)`;
+    el.style.cssText = 'margin-bottom:20px;';   // clear the plain-text card styling baked into the HTML
+    const { healthy, schizo } = _extractProbs(prediction, classProbabilities);
+    const healthyPct = healthy != null ? healthy * 100 : null;
+    const schizoPct  = schizo  != null ? schizo  * 100 : null;
+    const confPct = ((prediction.confidence || 0) * 100).toFixed(1);
+    const isSchizo = /schiz/i.test(prediction.label || '');
+    const labelColor = isSchizo ? '#b91c1c' : '#166534';
+
+    const bar = (label, pct, color) => `
+      <div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:6px;">
+          <span>${label}</span><span style="font-weight:700;color:${color};">${pct == null ? '—' : pct.toFixed(1) + '%'}</span>
+        </div>
+        <div style="height:10px;background:var(--off-white);border:1px solid var(--border);border-radius:5px;overflow:hidden;">
+          <div style="height:100%;width:${pct == null ? 0 : pct}%;background:${color};transition:width .5s ease;"></div>
+        </div>
+      </div>`;
+
+    el.innerHTML = `
+      <div style="border:2px solid var(--border);border-radius:8px;padding:22px 24px;background:var(--white);">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:12px;">Model Prediction</div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
+          <div style="font-size:26px;font-weight:800;color:${labelColor};">${prediction.label}</div>
+          <div style="font-size:13px;color:var(--dim);">${confPct}% confidence</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+          ${bar('Healthy', healthyPct, '#166534')}
+          ${bar('Schizophrenia', schizoPct, '#b91c1c')}
+        </div>
+        <div style="margin-top:16px;font-size:11px;color:var(--dim);line-height:1.5;">
+          Decision-support output from the deployed model — not a standalone clinical diagnosis.
+        </div>
+      </div>`;
+  }
+
+  function renderPredictionUnavailable(reason) {
+    const el = document.getElementById('ai-prediction-summary');
+    if (!el) return;
+    el.style.cssText = 'margin-bottom:20px;';
+    el.innerHTML = `
+      <div style="border:2px dashed var(--border);border-radius:8px;padding:18px 20px;background:var(--off-white);color:var(--dim);font-size:13px;line-height:1.6;">
+        <strong style="color:var(--accent);">Model prediction unavailable.</strong> ${reason ? reason : 'The inference service did not respond.'}
+        The 59 extracted features below, and the session itself, were still saved.
+      </div>`;
   }
 
   async function saveSessionToDatabase() {
