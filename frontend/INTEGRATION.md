@@ -621,3 +621,62 @@ capture rate — the sampling was fine, there was simply nothing to look at.
   as the obvious green button.
 
 Nothing in the public API changed, so this is still a straight file swap.
+
+---
+
+## 8. `/classify` returning 405, and the missing PDF button
+
+### Why it was 405, not 404
+
+`app.py` never defined a `/classify` route at all — `classify_endpoint_snippet.py`
+was written but never pasted in. Flask is created with `static_url_path='/'`, which
+registers a catch-all static-file route for the whole domain (methods GET/HEAD/OPTIONS
+only). A `POST /classify` still *matches that route's URL pattern*, so Werkzeug reports
+"the path exists but this method isn't allowed" — a 405 — instead of a plain 404. That
+single detail is why the error looked like a routing bug rather than a missing endpoint.
+
+### `app.py`
+
+- Loads `model.pkl`, `label_encoder.pkl`, `feature_names.pkl` from
+  `backend/model_artifacts/` at startup (adapted from `classify_endpoint_snippet.py`).
+  Missing or bad files log a `[WARN]` and leave the classifier `None` — the server
+  still starts and every other route keeps working.
+- Adds `POST /classify`. Response shape:
+  ```json
+  {
+    "success": true,
+    "prediction": {
+      "label": "Healthy",
+      "confidence": 0.87,
+      "healthy_probability": 0.87,
+      "schizophrenia_probability": 0.13
+    },
+    "class_probabilities": {"Healthy": 0.87, "Schizophrenia": 0.13},
+    "missing_features": []
+  }
+  ```
+  `healthy_probability` / `schizophrenia_probability` are matched by name from
+  `label_encoder.classes_` rather than assumed to be `probs[0]`/`probs[1]`, so it's
+  correct regardless of alphabetical class ordering.
+- If the classifier isn't loaded, `/classify` answers `503` with the exact directory
+  it looked in — check that message first if this still fails after redeploying, it
+  usually means `model_artifacts/` didn't ship with the build.
+
+### `battery-controller.js`
+
+- The PDF button was gated on `/classify` succeeding, even though
+  `downloadPDFReport()` only ever reads `_lastFeatures` and the on-screen canvases —
+  it never touches the prediction. It's now shown as soon as `renderFeaturesOnly()`
+  runs, so a flaky or absent model no longer hides a report you already have the data
+  for.
+- `renderPrediction()` now draws a Healthy-vs-Schizophrenia card — label, confidence,
+  and a percentage bar per class — instead of one line of text. It sits inside
+  `ai-result-section`, which is already the first section on the results screen, so
+  it appears before the SPEM/SchizoEye/Free-viewing graphs and the 59-feature list
+  without any reordering.
+- If inference fails, `renderPredictionUnavailable()` shows a plain explanatory card
+  in the same spot instead of leaving that area blank — the features, graphs and
+  saved session are unaffected either way.
+
+Nothing else in the file changed; this was pulled from the same base file you have
+deployed, so it's a straight swap.
