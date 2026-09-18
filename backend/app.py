@@ -635,8 +635,11 @@ def download_session_pdf(session_id):
                 'metrics': res.get('features', {}),
                 'prediction': res.get('prediction'),  # FIX PDF-1
                 'doctor_notes': doc.get('notes', ''),                       # ← WAS MISSING
-                'fv_gaze': [],
-                'images': {}
+                # FIX PDF-IMG-1: reuse whatever images were persisted at save
+                # time instead of an empty dict, so this on-the-fly rebuild
+                # (only reached when no report_id was ever stored) still has
+                # the real charts/scatters/heatmap to embed.
+                'images': res.get('images', {})
             }
             try:
                 pdf_bytes = _internal_generate_pdf(pdf_data)
@@ -793,10 +796,40 @@ def save_results():
             except Exception as e:
                 print(f"[WARN] SZ CSV upload failed; session data will still be saved: {e}")
 
-        # 2. Generate and Upload PDF Report
+        # 2. Persist the captured chart/scatter images (and the heatmap built
+        # from fv_gaze) on the session document itself, independent of
+        # whether PDF generation below succeeds.
+        #
+        # FIX PDF-IMG-1: previously these images only ever existed inside the
+        # PDF binary generated here — they were never saved anywhere else.
+        # Any later re-render of the PDF (save_notes()'s "regenerate with
+        # updated notes" step, and this route's own "no report_id" fallback
+        # in download_session_pdf()) therefore had no source images to embed
+        # and silently built with 'images': {}, then fs.delete()'d the good
+        # PDF and replaced it with an image-less one. That's why the PDF
+        # downloaded right after a test (via /generate-report, built from
+        # images still live in the DOM) had every chart, but the same
+        # session's PDF downloaded later from the dashboard did not — most
+        # commonly the moment a doctor added clinical notes and saved them.
+        # Storing the images here means every later regeneration path has
+        # the real images to reuse instead of blanking them.
+        session_images = {
+            'spem_hs4': data.get('image_spem_hs4', ''),
+            'spem_ls2': data.get('image_spem_ls2', ''),
+            'spem_ls4': data.get('image_spem_ls4', ''),
+            'fix_pure': data.get('image_fix_pure', ''),
+            'fix_dist': data.get('image_fix_dist', ''),
+            'heatmap': ''
+        }
+        if data.get('fv_gaze'):
+            try:
+                session_images['heatmap'] = generate_heatmap_base64(data['fv_gaze'])
+            except Exception as heatmap_err:
+                print(f"[WARN] Heatmap generation failed; continuing without it: {heatmap_err}")
+
+        # 3. Generate and Upload PDF Report
         try:
             print("[DEBUG] Preparing PDF payload...")
-            # In save_results(), replace the pdf_payload block:
             pdf_payload = {
                 'patient': {
                     'id': subject_id,
@@ -804,18 +837,15 @@ def save_results():
                     'age_sex': f"{data.get('patient_age', 'N/A')} / {data.get('patient_gender', 'N/A')}",
                     'date': timestamp.strftime('%d %b %Y')
                 },
-                'panss_score': data.get('panss_score') or 'Not recorded',   # ← ADD THIS LINE
+                'panss_score': data.get('panss_score') or 'Not recorded',
                 'metrics': data.get('features', {}),
                 'prediction': data.get('prediction'),  # FIX PDF-1
-                'fv_gaze': data.get('fv_gaze', []),
                 'doctor_notes': data.get('notes', ''),
-                'images': {
-                    'spem_hs4': data.get('image_spem_hs4', ''),
-                    'spem_ls2': data.get('image_spem_ls2', ''),
-                    'spem_ls4': data.get('image_spem_ls4', ''),
-                    'fix_pure': data.get('image_fix_pure', ''),
-                    'fix_dist': data.get('image_fix_dist', '')
-                }
+                # Pass the already-built image set (heatmap included) rather
+                # than raw fv_gaze — _internal_generate_pdf only recomputes
+                # the heatmap when 'fv_gaze' is present, so this reuses what
+                # we just built above instead of computing it twice.
+                'images': dict(session_images)
             }
             print("[DEBUG] Generating PDF bytes...")
             pdf_bytes = _internal_generate_pdf(pdf_payload)
@@ -848,10 +878,13 @@ def save_results():
             "results": {
                 "panss_score": data.get('panss_score'),  # store as-is (None/null → None in Mongo)
                 "features": data.get('features', {}),
-                "prediction": data.get('prediction')  # FIX PDF-1: persist so the
+                "prediction": data.get('prediction'),  # FIX PDF-1: persist so the
                 # dashboard's "View Report"/"Download PDF" and the notes-save
                 # PDF-regeneration path (save_notes(), below) can still show
                 # the model result later, not just at the moment of saving.
+                "images": session_images  # FIX PDF-IMG-1: persist so later PDF
+                # re-renders (notes save, no-report_id fallback) have real
+                # images to embed instead of blanking them.
             },
             "notes": data.get('notes', ""),
             "notes_author": data.get('notes_author', "unknown"),
@@ -933,8 +966,13 @@ def save_notes(session_id):
                 'metrics': res.get('features', {}),
                 'prediction': res.get('prediction'),  # FIX PDF-1
                 'doctor_notes': notes,   # ← the NEW notes
-                'fv_gaze': [],
-                'images': {}
+                # FIX PDF-IMG-1: reuse the images captured at save time
+                # instead of an empty dict. This used to wipe every SPEM
+                # graph, fixation scatter, and heatmap from the stored PDF
+                # the instant a doctor saved notes, because those images
+                # were never persisted anywhere except inside the old PDF
+                # binary this code was about to delete.
+                'images': res.get('images', {})
             }
             pdf_bytes = _internal_generate_pdf(pdf_payload)
 
