@@ -34,12 +34,17 @@ except ImportError:
 
 import secrets
 
-# Configure Flask to use frontend folder for templates and static files
-FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'frontend')
-TEMPLATE_DIR = os.path.join(FRONTEND_DIR, 'templates')
-STATIC_DIR = FRONTEND_DIR
+# The frontend is a separate Netlify deployment — this backend never serves
+# its HTML/JS, only the API and generated PDFs. Templates must live inside
+# THIS project's own folder (backend/templates/), because Render builds this
+# Dockerfile with backend/ as the build context: a path that reaches out to
+# a sibling ../frontend/ directory points at something that doesn't exist
+# inside the image at all, which is why render_template('report_template.html')
+# was raising TemplateNotFound even though the file existed in the repo.
+BASE = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE, 'templates')
 
-app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, static_url_path='/')
+app = Flask(__name__, template_folder=TEMPLATE_DIR)
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # The allowlist here used to name https://naina-assessment.netlify.app while the
 # deployed frontend lives at https://naina-schizo.netlify.app. Any origin that is
@@ -55,6 +60,7 @@ app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR, st
 # listed explicitly (Netlify deploy previews are matched by regex below).
 _DEFAULT_ORIGINS = [
     "https://naina-schizo.netlify.app",      # production frontend
+    "https://naina-assessment.netlify.app",  # previous domain, kept for old links
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "http://localhost:5500",
@@ -128,8 +134,6 @@ def logout():
     from flask import session as flask_session
     flask_session.clear()
     return jsonify({'success': True})
-
-BASE = os.path.dirname(os.path.abspath(__file__))
 
 # ── MONGODB SETUP ──
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -230,18 +234,52 @@ def _ensure_indexes():
 init_mongodb()
 
 # ── MODEL LOADING ──
-# Drop model.pkl / label_encoder.pkl / feature_names.pkl into backend/model_artifacts/
-# (next to this file) — see classify_endpoint_snippet.py, which this section
-# and the /classify route below are adapted from.
+# Drop {model_calibrated.pkl or model.pkl} / label_encoder.pkl / feature_names.pkl
+# into backend/model_artifacts/ (next to this file) — see classify_endpoint_snippet.py
+# and retrain_fixed.py, which this section and the /classify route are adapted from.
+#
+# model_calibrated.pkl is preferred over model.pkl when both exist: retrain_fixed.py
+# wraps the plain XGBClassifier in a 5-fold isotonic CalibratedClassifierCV
+# specifically "so confidence values are trustworthy" — raw tree-based
+# probabilities tend to be overconfident, and the results screen now shows the
+# Healthy/Schizophrenia percentages front and center, so the calibrated numbers
+# are the ones worth showing. CalibratedClassifierCV exposes the same
+# .predict_proba() interface as the plain model, so nothing else below needs to
+# know which one actually loaded.
 _MODEL_DIR = os.path.join(BASE, 'model_artifacts')
+_MODEL_FILE_CANDIDATES = ['model_calibrated.pkl', 'model.pkl']
 _clf = _label_encoder_clf = _feature_names = None
+_model_source = None
+
+for _candidate in _MODEL_FILE_CANDIDATES:
+    _candidate_path = os.path.join(_MODEL_DIR, _candidate)
+    if not os.path.exists(_candidate_path):
+        continue
+    try:
+        _clf = joblib.load(_candidate_path)
+        _model_source = _candidate
+        break
+    except Exception as e:
+        print(f"[WARN] Found {_candidate} in {_MODEL_DIR} but could not load it: {e}")
+
 try:
-    _clf               = joblib.load(os.path.join(_MODEL_DIR, 'model.pkl'))
     _label_encoder_clf = joblib.load(os.path.join(_MODEL_DIR, 'label_encoder.pkl'))
     _feature_names     = joblib.load(os.path.join(_MODEL_DIR, 'feature_names.pkl'))
-    print(f"[OK] XGBoost classifier loaded ({len(_feature_names)} features) from {_MODEL_DIR}")
 except Exception as e:
-    print(f"[WARN] Classifier not loaded from {_MODEL_DIR}: {e}")
+    print(f"[WARN] label_encoder.pkl / feature_names.pkl not loaded from {_MODEL_DIR}: {e}")
+
+if _clf is not None and _label_encoder_clf is not None and _feature_names is not None:
+    print(f"[OK] Classifier loaded from {_model_source} ({len(_feature_names)} features) in {_MODEL_DIR}")
+else:
+    _still_missing = [
+        label for label, val in (
+            ('model_calibrated.pkl or model.pkl', _clf),
+            ('label_encoder.pkl', _label_encoder_clf),
+            ('feature_names.pkl', _feature_names),
+        ) if val is None
+    ]
+    print(f"[WARN] Classifier not fully loaded from {_MODEL_DIR}; missing: {', '.join(_still_missing)}")
+    _clf = None  # /classify checks this and refuses cleanly rather than half-loading
 
 # Kept for anything elsewhere that still imports these names.
 label_encoder = _label_encoder_clf
@@ -289,7 +327,7 @@ def classify():
         return jsonify({
             'success': False,
             'error': f'Classifier not available on this server (looked in {_MODEL_DIR}). '
-                     'Confirm model.pkl, label_encoder.pkl and feature_names.pkl were deployed there.'
+                     'Confirm model_calibrated.pkl (or model.pkl), label_encoder.pkl and feature_names.pkl were deployed there.'
         }), 503
     try:
         data = request.get_json(force=True, silent=True) or {}
