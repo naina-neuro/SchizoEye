@@ -875,6 +875,12 @@ def save_results():
                 "screen_size": data.get('screen_size', 'N/A'),
                 "timestamp": timestamp
             },
+             "acquisition": {
+                            "calibration_error_px": data.get('calibration_error'),
+                            "px_per_deg_used": data.get('px_per_deg_used'),
+                            "tracker_performance": data.get('tracker_performance'),
+                            "data_quality": data.get('data_quality'),
+                        },
             "results": {
                 "panss_score": data.get('panss_score'),  # store as-is (None/null → None in Mongo)
                 "features": data.get('features', {}),
