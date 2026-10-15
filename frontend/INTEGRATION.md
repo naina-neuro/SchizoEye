@@ -689,29 +689,11 @@ Two separate filesystem mismatches, both visible in your file tree screenshot.
 
 ### 9a. 503 — "Classifier not available"
 
-Your `backend/model_artifacts/` contains:
-
-```
-feature_names.pkl
-label_encoder.pkl
-model_calibrated.pkl      ← not model.pkl
-```
-
-`retrain_fixed.py` saves **two** model files: `model.pkl` (plain XGBClassifier) and
-`model_calibrated.pkl` (the same model wrapped in a 5-fold isotonic
-`CalibratedClassifierCV`, built specifically — per that script's own comment — "so
-confidence values are trustworthy"). Only the calibrated one was copied into
-`model_artifacts/`. `app.py` was hardcoded to look for `model.pkl`, got
-`FileNotFoundError`, logged the `[WARN]`, and `/classify` correctly refused with 503
-rather than silently running with nothing loaded.
-
-Fixed by making the loader check `model_calibrated.pkl` first, then fall back to
-`model.pkl`. Calibrated is preferred on purpose, not just as a fallback: raw
-tree-based probabilities tend to be overconfident, and the results screen now shows
-the Healthy/Schizophrenia percentages as the headline — those numbers should be the
-calibrated ones. `CalibratedClassifierCV.predict_proba()` has the identical
-signature to the plain model's, so nothing else in `/classify` needed to change.
-You don't need to add `model.pkl` at all; what's already in the folder is enough.
+The backend loads the basic XGBoost classifier from
+`backend/model_artifacts/model.pkl`, together with `label_encoder.pkl` and
+`feature_names.pkl`. The training script and notebook export these three files;
+copy them into `backend/model_artifacts/` after retraining. Any older
+`model_calibrated.pkl` file is not used.
 
 ### 9b. `TemplateNotFound: report_template.html`
 
@@ -744,6 +726,6 @@ the only piece I can't do from here since I don't have write access to your repo
 ### Redeploy checklist
 
 After pushing:
-1. Render log should show `[OK] Classifier loaded from model_calibrated.pkl (59 features) in /app/model_artifacts` — not `[WARN]`.
+1. Render log should show `[OK] XGBoost classifier loaded from model.pkl (59 features) in /app/model_artifacts` — not `[WARN]`.
 2. Run a session end to end; `/classify` should return 200 and the prediction card should render.
 3. Click **Download PDF Report** — no more `TemplateNotFound` in the log, and a PDF should download.

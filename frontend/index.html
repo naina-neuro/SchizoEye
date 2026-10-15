@@ -1,39 +1,32 @@
 <!DOCTYPE html>
 <!--
-  ╔══════════════════════════════════════════════════════════════════════════╗
-  ║  index.html  —  Oculomotor Battery  (entry point)                       ║
-  ║                                                                          ║
-  ║  FILE STRUCTURE                                                          ║
-  ║  ─────────────────────────────────────────────────────────────────────  ║
-  ║  index.html            ← you are here (HTML markup + wiring)            ║
-  ║  styles.css            ← all CSS (variables, layouts, animations)       ║
-  ║  (canvas patch inlined in <head> — audio-utils.js removed)               ║
-  ║  eye-tracker.js        ← EyeTracker IIFE (calibration, gaze pipeline)   ║
-  ║  gaze-collector.js     ← RawGazeCollector IIFE (free-viewing recorder)  ║
-  ║  battery-controller.js ← BatteryController IIFE (tasks, results, AI)   ║
-  ║                                                                          ║
-  ║  EXTERNAL ASSETS REQUIRED (not bundled)                                 ║
-  ║  stimuli/1.jpg … stimuli/25.jpg       — free-viewing images             ║
-  ║  Instructions_audio/*.mp3             — per-task audio instructions     ║
-  ║  whatsapp-video-2026-04-01-….mp4      — calibration guide video         ║
-  ║                                                                          ║
-  ║  CDN DEPENDENCIES (loaded in <head>)                                    ║
-  ║  @tensorflow/tfjs-core@3.20.0         — TF WebGL backend               ║
-  ║  @mediapipe/face_mesh@0.4.1633559619  — MediaPipe FaceMesh runtime     ║
-  ║  face-landmarks-detection@1.0.5       — Iris landmark model            ║
-  ║                                                                          ║
-  ║  SCRIPT LOAD ORDER (dependency chain)                                   ║
-  ║  (canvas patch is inlined in <head> — no audio-utils.js)                 ║
-  ║  2. eye-tracker.js        (NeurOcular: TF + MediaPipe, no local deps)   ║
-  ║  3. gaze-collector.js     (needs EyeTracker global)                     ║
-  ║  4. battery-controller.js (needs EyeTracker + RawGazeCollector + Plotly)║
-  ╚══════════════════════════════════════════════════════════════════════════╝
+  SchizoEye — Oculomotor Assessment Frontend
+
+  Purpose:
+  - Provides login, role-based dashboards, camera checks, calibration, assessment tasks, and reports.
+  - Extracts 59 oculomotor features in the browser and sends them to the Flask API.
+  - The Flask backend runs the saved classifier (the current training pipeline uses calibrated XGBoost).
+  - TensorFlow.js is not the final 59-feature classification model.
+
+  Eye-tracking and visualization stack:
+  - MediaPipe FaceMesh uses refined landmarks: 478 points (468 face + 10 iris points).
+  - TensorFlow.js 3.20 core/converter/WebGL packages are loaded, and eye-tracker.js initializes its WebGL backend.
+  - The landmark detector is configured with the MediaPipe runtime; a separate MediaPipe FaceDetection pass checks face framing and lighting.
+  - Plotly renders SPEM graphs; Chart.js is loaded when dashboard analytics charts are needed.
+
+  Local files:
+  - config.js              API base URL
+  - styles.css             Shared layout and styling
+  - eye-tracker.js         Face landmarks, calibration, and gaze estimation
+  - gaze-collector.js      Free-viewing gaze sample collection
+  - battery-controller.js  Assessment flow, feature extraction, and API calls
+
+  Required local assets include stimuli/1.jpg–25.jpg and the task instruction media.
 -->
 <html lang="en">
 
 <head>
-  <!-- Canvas getContext patch — must run before ANY other script creates a 2D context.
-       Adds willReadFrequently:true automatically so pixel reads don't go through the GPU. -->
+  <!-- Optimize frequent pixel reads from 2D canvases; load before other scripts. -->
   <script>
     (function () {
       var orig = HTMLCanvasElement.prototype.getContext;
@@ -50,14 +43,7 @@
   <meta http-equiv="Expires" content="0">
   <title>Oculomotor Diagnostic Battery</title>
   <script src="config.js"></script>
-  <!--
-    NeurOcular Engine — TF 3.20.0 + MediaPipe FaceMesh (replaces WebGazer)
-    ─────────────────────────────────────────────────────────────────────────
-    face-landmarks-detection@1.0.5 requires TF 3.20.0 and @mediapipe/face_mesh
-    (NOT @mediapipe/iris). solutionPath in eye-tracker.js must point to the
-    face_mesh CDN directory with a trailing slash.
-    ─────────────────────────────────────────────────────────────────────────
-  -->
+  <!-- Browser ML dependencies: TensorFlow.js, MediaPipe face models, and camera utilities. -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@3.20.0/dist/tf-core.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@3.20.0/dist/tf-converter.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@3.20.0/dist/tf-backend-webgl.min.js"></script>
@@ -65,9 +51,9 @@
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.5/dist/face-landmarks-detection.min.js"></script>
-  <!-- Plotly: used in battery-controller.js to render SPEM graphs -->
+  <!-- Plotly renders smooth-pursuit (SPEM) graphs. -->
   <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
-  <!-- All CSS variables, screen layouts, animations, and print styles -->
+  <!-- Shared styles for the assessment, dashboards, and reports. -->
   <link rel="stylesheet" href="styles.css">
   <style>
     /* ── LOGIN SCREEN ───────────────────────────────────────────── */
@@ -189,6 +175,7 @@
     let _currentRole = null;
 
     const _clientDiagnostics = [];
+    // Record frontend errors in the on-page diagnostics panel and browser console.
     window.reportClientError = function (stage, error, details) {
       const message = error instanceof Error ? error.message : String(error || 'Unknown error');
       const stack = error instanceof Error && error.stack ? `\n${error.stack}` : '';
@@ -200,10 +187,12 @@
       if (panel) panel.style.display = 'block';
       console.error(line);
     };
+    // Copy the collected frontend diagnostics for troubleshooting.
     window.copyClientDiagnostics = async function () {
       const text = _clientDiagnostics.join('\n\n') || 'No client errors recorded.';
       try { await navigator.clipboard.writeText(text); } catch (e) { window.prompt('Copy diagnostics:', text); }
     };
+    // Emit timestamped diagnostic messages during an assessment.
     window.TestDiag = function (msg, extra) {
       const ts = new Date().toISOString().split('T')[1].replace('Z', '');
       if (extra !== undefined) console.log(`[TestDiag ${ts}] ${msg}`, extra);
@@ -219,39 +208,39 @@
       window.reportClientError('unhandled promise', event.reason);
     });
 
-    // Check if user was already logged in (for new tabs)
-   function initializeUserFromStorage() {
-  const urlParams = new URLSearchParams(window.location.search);
-  const testToken = urlParams.get('token');
-  const externalTestMode = urlParams.get('mode') === 'test' || Boolean(testToken) || window.parent !== window;
-  if (externalTestMode) {
-    document.body.classList.add('headless-mode');
-    document.getElementById('login-screen').style.display = 'none';
-    showBatteryIntro();
-    return;
-  }
-  const storedUser = localStorage.getItem('currentUser');
-  const storedRole = localStorage.getItem('currentRole');
-  if (storedUser && storedRole) {
-    _currentUser = storedUser;
-    _currentRole = storedRole;
-    document.getElementById('login-screen').style.display = 'none';
-    const badge = document.getElementById('user-badge');
-    badge.style.display = 'flex';
-    document.getElementById('user-badge-name').textContent = `${storedUser} · ${storedRole}`;
+    // Restore the saved dashboard state or open the standalone assessment.
+    function initializeUserFromStorage() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const testToken = urlParams.get('token');
+      const externalTestMode = urlParams.get('mode') === 'test' || Boolean(testToken) || window.parent !== window;
 
-    // ── NEW: if this tab was opened for a test, go straight to battery ──
-    if (urlParams.get('mode') === 'test') {
-      showBatteryIntro();   // ← show the battery directly
-      
-    } else {
-      showRoleDashboard();  // ← normal dashboard flow
+      if (externalTestMode) {
+        document.body.classList.add('headless-mode');
+        document.getElementById('login-screen').style.display = 'none';
+        showBatteryIntro();
+        return;
+      }
+
+      const storedUser = localStorage.getItem('currentUser');
+      const storedRole = localStorage.getItem('currentRole');
+      if (storedUser && storedRole) {
+        _currentUser = storedUser;
+        _currentRole = storedRole;
+        document.getElementById('login-screen').style.display = 'none';
+
+        const badge = document.getElementById('user-badge');
+        badge.style.display = 'flex';
+        document.getElementById('user-badge-name').textContent = `${storedUser} · ${storedRole}`;
+
+        if (urlParams.get('mode') === 'test') {
+          showBatteryIntro();
+        } else {
+          showRoleDashboard();
+        }
+      }
     }
-  }
-}
 
-    // Initialize only after full DOM is parsed — never call before DOMContentLoaded
-    // because dashboard divs are defined later in the HTML and getElementById returns null.
+    // Wait until the page markup exists before restoring the user state.
     window.addEventListener('DOMContentLoaded', initializeUserFromStorage);
 
     // Allow Enter key to submit login
@@ -262,6 +251,7 @@
       if (e.key === 'Enter') document.getElementById('login-password').focus();
     });
 
+    // Authenticate the user through the Flask backend and open the matching dashboard.
     async function doLogin() {
       const username = document.getElementById('login-username').value.trim();
       const password = document.getElementById('login-password').value.trim();
@@ -278,7 +268,7 @@
         if (data.success) {
           _currentUser = data.username;
           _currentRole = data.role;
-          // Store in localStorage for persistence across tabs
+          // Persist the display identity across tabs.
           localStorage.setItem('currentUser', data.username);
           localStorage.setItem('currentRole', data.role);
           document.getElementById('login-screen').style.display = 'none';
@@ -289,52 +279,45 @@
         } else {
           errEl.textContent = data.error || 'Login failed. Check credentials.';
         }
-      } catch(e) {
-        // Fallback: allow offline login with hardcoded credentials for demo
-        const OFFLINE_USERS = { admin: 'admin123', doctor: 'doctor123', clinician: 'clinician123' };
-        if (OFFLINE_USERS[username] === password) {
-          _currentUser = username;
-          _currentRole = username === 'admin' ? 'admin' : username === 'clinician' ? 'clinician' : 'doctor';
-          // Store in localStorage for persistence across tabs
-          localStorage.setItem('currentUser', username);
-          localStorage.setItem('currentRole', _currentRole);
-          document.getElementById('login-screen').style.display = 'none';
-          const badge = document.getElementById('user-badge');
-          badge.style.display = 'flex';
-          document.getElementById('user-badge-name').textContent = `${username} · ${_currentRole}`;
-          showRoleDashboard();
-        } else {
-          errEl.textContent = 'Invalid credentials.';
-        }
+      } catch (e) {
+        window.reportClientError('login request', e, `API: ${API}/login`);
+        errEl.textContent = 'Unable to reach the server. Check your connection and try again.';
       }
     }
 
-  function returnToDashboard() {
-  document.getElementById('results-screen').style.display = 'none';
-  document.getElementById('return-to-dashboard-wrap').style.display = 'none';
-  const saveBtn = document.getElementById('btn-save-session');
-  if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 Save Session to Database'; saveBtn.style.opacity = '1'; }
+    // Leave the results screen and return to the dashboard or assessment intro.
+    function returnToDashboard() {
+      document.getElementById('results-screen').style.display = 'none';
+      document.getElementById('return-to-dashboard-wrap').style.display = 'none';
 
-  // If this was a popup test tab, close it; otherwise go to dashboard
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('mode') === 'test') {
-    if (confirm('Return to the dashboard tab? This tab will close.')) {
-      window.close();
-    } else {
-      showBatteryIntro();  // allow running another test
+      const saveBtn = document.getElementById('btn-save-session');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save Session to Database';
+        saveBtn.style.opacity = '1';
+      }
+
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('mode') === 'test') {
+        if (confirm('Return to the dashboard tab? This tab will close.')) {
+          window.close();
+        } else {
+          showBatteryIntro();
+        }
+      } else {
+        showRoleDashboard();
+      }
     }
-  } else {
-    showRoleDashboard();
-  }
-}
 
+
+    // End the server session and clear saved frontend login state.
     async function doLogout() {
       try {
         const response = await fetch(`${API}/logout`, { method: 'POST', credentials: 'include' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
       } catch(e) { window.reportClientError('logout request', e, `API: ${API}/logout`); }
       _currentUser = null; _currentRole = null;
-      // Clear localStorage on logout
+      // Clear the saved display identity.
       localStorage.removeItem('currentUser');
       localStorage.removeItem('currentRole');
       document.getElementById('user-badge').style.display = 'none';
@@ -342,7 +325,7 @@
       document.getElementById('login-username').value = '';
       document.getElementById('login-password').value = '';
       document.getElementById('login-error').textContent = '';
-      // Hide dashboards and results
+      // Hide dashboard and assessment views.
       document.getElementById('doctor-dashboard').style.display = 'none';
       document.getElementById('admin-dashboard').style.display  = 'none';
       document.getElementById('clinician-dashboard').style.display = 'none';
@@ -350,8 +333,9 @@
       document.getElementById('results-screen').style.display   = 'none';
     }
 
+    // Display the dashboard that matches the current user role.
     function showRoleDashboard() {
-      // Update header user label in whichever dashboard we're showing
+      // Show the signed-in identity in the active dashboard header.
       const docLabel   = document.getElementById('doctor-header-user');
       const adminLabel = document.getElementById('admin-header-user');
       const clinLabel  = document.getElementById('clinician-header-user');
@@ -370,21 +354,20 @@
         document.getElementById('clinician-dashboard').style.display = 'flex';
       }
     }
+    // Hide dashboards and display the assessment start screen.
     function showBatteryIntro() {
-  // Hide dashboards, show the battery intro with a back button
-  document.getElementById('battery-intro').classList.remove('protocol-started');
-  document.getElementById('doctor-dashboard').style.display = 'none';
-  document.getElementById('admin-dashboard').style.display  = 'none';
-  document.getElementById('clinician-dashboard').style.display = 'none';
-  document.getElementById('battery-intro').style.display    = 'block';
-}
+      document.getElementById('battery-intro').classList.remove('protocol-started');
+      document.getElementById('doctor-dashboard').style.display = 'none';
+      document.getElementById('admin-dashboard').style.display = 'none';
+      document.getElementById('clinician-dashboard').style.display = 'none';
+      document.getElementById('battery-intro').style.display = 'block';
+    }
 
-    // ── SESSION FEATURES STORE (avoids HTML attribute encoding issues) ──
+
+    // Cache each session's feature vector for detail and report views.
     const _sessionFeatures = {};
 
-    // ── SESSION DATA LOADER (shared by both dashboards) ──────────────────
-
-    // ── FEATURE ORDER (must match battery-controller.js FEATURE_ORDER) ────
+    // Keep this order aligned with the 59-feature vector in battery-controller.js and the backend model.
     const FEATURE_ORDER = [
       "fv_fnum_mean", "fv_fdur_mean", "fv_snum_mean", "fv_sdur_mean",
       "fv_samp_mean", "fv_spv_mean", "fv_sav_mean", "fv_spl_mean",
@@ -402,6 +385,7 @@
       "antisaccade_correction_error_rate", "antisaccade_latency", "antisaccade_accuracy"
     ];
 
+    // Fetch session summaries from the backend for the dashboards.
     async function loadSessions() {
       try {
         const r = await fetch(`${API}/sessions?_=${Date.now()}`, { cache: 'no-store' });
@@ -419,6 +403,7 @@
     }
 
     // ── DOCTOR SESSION VIEWER ─────────────────────────────────────────────
+    // Populate the doctor session table with patient and report information.
     async function loadDoctorSessions() {
       const tbody = document.getElementById('doctor-session-tbody');
       tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--dim);">Loading sessions…</td></tr>';
@@ -428,7 +413,7 @@
         tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">${message}</td></tr>`;
         return;
       }
-      // Store features in JS map to avoid HTML encoding issues
+      // Cache features for the selected session.
       sessions.forEach(s => { _sessionFeatures[s.id] = s.features || {}; });
       tbody.innerHTML = sessions.map(s => `
         <tr>
@@ -443,11 +428,12 @@
           <td>${s.has_report ? `<button class="dash-btn primary" onclick="downloadSessionPDF('${s.id}')">⬇ PDF</button>` : '—'}</td>
         </tr>
       `).join('');
-      // Clear search
+      // Reset the search field after reloading.
       const searchInput = document.getElementById('doc-search-input');
       if (searchInput) searchInput.value = '';
     }
 
+    // Filter visible doctor-session rows using the search field.
     function filterDoctorSessions() {
       const input = document.getElementById('doc-search-input').value.toLowerCase();
       const rows = document.querySelectorAll('#doctor-session-tbody tr');
@@ -458,6 +444,7 @@
     }
 
     // ── ADMIN SESSION VIEWER ──────────────────────────────────────────────
+    // Populate the admin session table with session and export actions.
     async function loadAdminSessions() {
       const tbody = document.getElementById('admin-session-tbody');
       tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">Loading sessions…</td></tr>';
@@ -467,7 +454,7 @@
         tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--dim);">${message}</td></tr>`;
         return;
       }
-      // Store features in JS map
+      // Cache features for the selected session.
       sessions.forEach(s => { _sessionFeatures[s.id] = s.features || {}; });
       tbody.innerHTML = sessions.map(s => `
         <tr>
@@ -486,11 +473,12 @@
           <td>${s.has_report ? `<button class="dash-btn primary" onclick="downloadSessionPDF('${s.id}')">⬇ PDF</button>` : '—'}</td>
         </tr>
       `).join('');
-      // Clear search
+      // Reset the search field after reloading.
       const searchInput = document.getElementById('admin-search-input');
       if (searchInput) searchInput.value = '';
     }
 
+    // Filter visible admin-session rows using the search field.
     function filterAdminSessions() {
       const input = document.getElementById('admin-search-input').value.toLowerCase();
       const rows = document.querySelectorAll('#admin-session-tbody tr');
@@ -501,6 +489,7 @@
     }
 
     // ── FEATURE MODAL ──────────────────────────────────────────────────────
+    // Display the saved 59-feature vector for the selected session.
     function showFeatures(id) {
       const features = _sessionFeatures[id] || {};
       const modal = document.getElementById('feature-modal');
@@ -522,6 +511,7 @@
       modal.style.display = 'flex';
     }
 
+    // Hide the feature-details modal.
     function closeFeatureModal() {
       document.getElementById('feature-modal').style.display = 'none';
     }
@@ -538,6 +528,7 @@
       if (notesModal && e.target === notesModal) closeNotesModal();
     });
 
+    // Download the saved PDF report for a session.
     function downloadSessionPDF(sessionId) {
       const url = `${API}/sessions/${sessionId}/pdf`;
       const a = document.createElement('a');
@@ -548,227 +539,231 @@
       document.body.removeChild(a);
     }
 
+    // Close the selected session report summary.
     function closeReportModal() {
       document.getElementById('report-modal').classList.remove('show');
       document.getElementById('report-modal').style.display = 'none';
     }
 
+    // Download the PDF for the session currently shown in the report modal.
     function downloadReportPDF() {
       const sessionId = document.getElementById('report-modal').dataset.sessionId;
       if (sessionId) downloadSessionPDF(sessionId);
     }
 
+    // Build and display the feature summary for a selected session.
     async function showReportModal(sessionId) {
-  // Use already-loaded features from the JS store
-  const features = _sessionFeatures[sessionId] || {};
+      // Read feature data cached when the session list was loaded.
+      const features = _sessionFeatures[sessionId] || {};
   
-  // Find session data from the already-loaded table
-  const rows = document.querySelectorAll(
-    '#doctor-session-tbody tr, #admin-session-tbody tr'
-  );
+      // Read the matching session details from the visible table.
+      const rows = document.querySelectorAll(
+        '#doctor-session-tbody tr, #admin-session-tbody tr'
+      );
   
-  // Build a minimal session object from the DOM row
-  let sessionName = 'Unknown Patient';
-  let sessionDate = '—';
-  let sessionAge  = '—';
-  let sessionPanss = '—';
+      // Initialize display values in case the session row is not found.
+      let sessionName = 'Unknown Patient';
+      let sessionDate = '—';
+      let sessionAge  = '—';
+      let sessionPanss = '—';
   
-  rows.forEach(row => {
-    const cells = row.querySelectorAll('td');
-    if (cells.length >= 4) {
-      // Try to match by checking if this row's view button calls this sessionId
-      const btn = row.querySelector(`button[onclick*="${sessionId}"]`);
-      if (btn) {
-        sessionName  = cells[1]?.innerText || 'Unknown';
-        sessionAge   = cells[2]?.innerText || '—';
-        sessionDate  = cells[3]?.innerText || '—';
-        sessionPanss = cells[4]?.innerText || '—';
+      rows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 4) {
+          // Try to match by checking if this row's view button calls this sessionId
+          const btn = row.querySelector(`button[onclick*="${sessionId}"]`);
+          if (btn) {
+            sessionName  = cells[1]?.innerText || 'Unknown';
+            sessionAge   = cells[2]?.innerText || '—';
+            sessionDate  = cells[3]?.innerText || '—';
+            sessionPanss = cells[4]?.innerText || '—';
+          }
+        }
+      });
+
+      const body = document.getElementById('report-modal-body');
+
+      // Group related features for the report summary.
+      const featureGroups = [
+        {
+          label: 'Free Viewing',
+          color: '#0d4f8a',
+          lightColor: '#e8f0fb',
+          icon: '👁',
+          keys: [
+            ['fv_fnum_mean',  'Fixation Count',       '',    '18–28'],
+            ['fv_fdur_mean',  'Fixation Duration',     'ms',  '200–350'],
+            ['fv_snum_mean',  'Saccade Count',         '',    '17–27'],
+            ['fv_samp_mean',  'Saccade Amplitude',     '°',   '2–6'],
+            ['fv_spv_mean',   'Peak Velocity',         '°/s', '80–200'],
+            ['fv_spl_mean',   'Scanpath Length',       '°',   '600–1200'],
+            ['fv_disp_mean',  'Fixation Dispersion',   '',    '0.8–1.5'],
+          ]
+        },
+        {
+          label: 'Smooth Pursuit — HS4',
+          color: '#145a3c',
+          lightColor: '#e6f5ee',
+          icon: '📈',
+          keys: [
+            ['HS4_Mean_H_gain',   'H-Gain',      '',   '0.85–1.10'],
+            ['HS4_Mean_H_logSNR', 'log SNR',     '',   '>2.0'],
+            ['HS4_Mean_H_RMSE',   'RMSE',        '°',  '<5.0'],
+            ['HS4_SacNum',        'Saccades',    '',   ''],
+            ['HS4_SacAmp',        'Sac Amp',     '°',  '<2.0'],
+          ]
+        },
+        {
+          label: 'Smooth Pursuit — LS2 & LS4',
+          color: '#5a3e14',
+          lightColor: '#fdf3e6',
+          icon: '〰️',
+          keys: [
+            ['LS2_Mean_H_gain',   'LS2 H-Gain',  '',   '0.85–1.10'],
+            ['LS2_Mean_H_logSNR', 'LS2 log SNR', '',   '>2.0'],
+            ['LS4_Mean_H_gain',   'LS4 H-Gain',  '',   '0.80–1.20'],
+            ['LS4_Mean_H_logSNR', 'LS4 log SNR', '',   '>2.0'],
+            ['LS4_Mean_H_RMSE',   'LS4 RMSE',    '°',  '<5.0'],
+          ]
+        },
+        {
+          label: 'Fixation Stability',
+          color: '#4a1472',
+          lightColor: '#f3e8fc',
+          icon: '🎯',
+          keys: [
+            ['fix_fs_fd',  'Pure Fix Duration',   'ms', '>500'],
+            ['fix_fs_sn',  'Pure Saccades',       '',   '<20'],
+            ['fix_fs_sa',  'Pure Sac Amplitude',  '°',  '<1.5'],
+            ['fix_fd_fd',  'Dist Fix Duration',   'ms', '>800'],
+            ['fix_fd_sn',  'Dist Saccades',       '',   '<10'],
+            ['fix_fd_sa',  'Dist Sac Amplitude',  '°',  '<2.0'],
+          ]
+        },
+        {
+          label: 'Antisaccade',
+          color: '#7a1a1a',
+          lightColor: '#fce8e8',
+          icon: '⚡',
+          keys: [
+            ['antisaccade_error_rate',            'Error Rate',       '%',  '<25%'],
+            ['antisaccade_correction_error_rate', 'Correction Rate',  '%',  '<10%'],
+            ['antisaccade_latency',               'Mean Latency',     'ms', '250–400'],
+            ['antisaccade_accuracy',              'Accuracy',         '%',  '>85%'],
+          ]
+        },
+      ];
+
+      // Format a feature value and append its display unit.
+      function fmt(key, val, unit) {
+        if (val === undefined || val === null || val === '') return '—';
+        let display = typeof val === 'number' ? val.toFixed(3) : val;
+
+        // Display rate and accuracy features as percentages.
+        if (key.includes('error_rate') || key.includes('accuracy') || key.includes('correction_error')) {
+          display = (parseFloat(val) * 100).toFixed(1);
+        }
+        return display + (unit ? ' ' + unit : '');
       }
-    }
-  });
 
-  const body = document.getElementById('report-modal-body');
-
-  // Feature group definitions
-  const featureGroups = [
-    {
-      label: 'Free Viewing',
-      color: '#0d4f8a',
-      lightColor: '#e8f0fb',
-      icon: '👁',
-      keys: [
-        ['fv_fnum_mean',  'Fixation Count',       '',    '18–28'],
-        ['fv_fdur_mean',  'Fixation Duration',     'ms',  '200–350'],
-        ['fv_snum_mean',  'Saccade Count',         '',    '17–27'],
-        ['fv_samp_mean',  'Saccade Amplitude',     '°',   '2–6'],
-        ['fv_spv_mean',   'Peak Velocity',         '°/s', '80–200'],
-        ['fv_spl_mean',   'Scanpath Length',       '°',   '600–1200'],
-        ['fv_disp_mean',  'Fixation Dispersion',   '',    '0.8–1.5'],
-      ]
-    },
-    {
-      label: 'Smooth Pursuit — HS4',
-      color: '#145a3c',
-      lightColor: '#e6f5ee',
-      icon: '📈',
-      keys: [
-        ['HS4_Mean_H_gain',   'H-Gain',      '',   '0.85–1.10'],
-        ['HS4_Mean_H_logSNR', 'log SNR',     '',   '>2.0'],
-        ['HS4_Mean_H_RMSE',   'RMSE',        '°',  '<5.0'],
-        ['HS4_SacNum',        'Saccades',    '',   ''],
-        ['HS4_SacAmp',        'Sac Amp',     '°',  '<2.0'],
-      ]
-    },
-    {
-      label: 'Smooth Pursuit — LS2 & LS4',
-      color: '#5a3e14',
-      lightColor: '#fdf3e6',
-      icon: '〰️',
-      keys: [
-        ['LS2_Mean_H_gain',   'LS2 H-Gain',  '',   '0.85–1.10'],
-        ['LS2_Mean_H_logSNR', 'LS2 log SNR', '',   '>2.0'],
-        ['LS4_Mean_H_gain',   'LS4 H-Gain',  '',   '0.80–1.20'],
-        ['LS4_Mean_H_logSNR', 'LS4 log SNR', '',   '>2.0'],
-        ['LS4_Mean_H_RMSE',   'LS4 RMSE',    '°',  '<5.0'],
-      ]
-    },
-    {
-      label: 'Fixation Stability',
-      color: '#4a1472',
-      lightColor: '#f3e8fc',
-      icon: '🎯',
-      keys: [
-        ['fix_fs_fd',  'Pure Fix Duration',   'ms', '>500'],
-        ['fix_fs_sn',  'Pure Saccades',       '',   '<20'],
-        ['fix_fs_sa',  'Pure Sac Amplitude',  '°',  '<1.5'],
-        ['fix_fd_fd',  'Dist Fix Duration',   'ms', '>800'],
-        ['fix_fd_sn',  'Dist Saccades',       '',   '<10'],
-        ['fix_fd_sa',  'Dist Sac Amplitude',  '°',  '<2.0'],
-      ]
-    },
-    {
-      label: 'Antisaccade',
-      color: '#7a1a1a',
-      lightColor: '#fce8e8',
-      icon: '⚡',
-      keys: [
-        ['antisaccade_error_rate',            'Error Rate',       '%',  '<25%'],
-        ['antisaccade_correction_error_rate', 'Correction Rate',  '%',  '<10%'],
-        ['antisaccade_latency',               'Mean Latency',     'ms', '250–400'],
-        ['antisaccade_accuracy',              'Accuracy',         '%',  '>85%'],
-      ]
-    },
-  ];
-
-  function fmt(key, val, unit) {
-    if (val === undefined || val === null || val === '') return '—';
-    let display = typeof val === 'number' ? val.toFixed(3) : val;
-    // Percentage conversions
-    if (key.includes('error_rate') || key.includes('accuracy') || key.includes('correction_error')) {
-      display = (parseFloat(val) * 100).toFixed(1);
-    }
-    return display + (unit ? ' ' + unit : '');
-  }
-
-  const groupsHTML = featureGroups.map(g => `
-    <div class="cr-group">
-      <div class="cr-group-header" style="background:${g.color};">
-        <span class="cr-group-icon">${g.icon}</span>
-        <span class="cr-group-label">${g.label}</span>
-      </div>
-      <div class="cr-group-body">
-        <table class="cr-feat-table">
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Patient Value</th>
-              <th>Reference Range</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${g.keys.map(([key, label, unit, ref]) => `
-              <tr>
-                <td class="cr-feat-name">${label}</td>
-                <td class="cr-feat-val">${fmt(key, features[key], unit)}</td>
-                <td class="cr-feat-ref">${ref || '—'}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `).join('');
-
-  const panssNum = parseFloat(sessionPanss);
-  const panssColor = isNaN(panssNum) ? '#6b7280' : panssNum > 90 ? '#b91c1c' : panssNum > 60 ? '#b45309' : '#166534';
-  const panssLabel = isNaN(panssNum) ? 'Not recorded' : panssNum > 90 ? 'Severe' : panssNum > 60 ? 'Moderate' : 'Mild / HC';
-
-  body.innerHTML = `
-    <div class="cr-root">
-
-      <!-- HEADER BANNER -->
-      <div class="cr-banner">
-        <div class="cr-banner-left">
-          <div class="cr-clinic-name">NAINA</div>
-          <div class="cr-clinic-sub">Oculomotor Assessment Report</div>
-        </div>
-        <div class="cr-banner-stamp">
-          <div class="cr-stamp-line">${sessionDate}</div>
-          <div class="cr-stamp-label">Assessment Date</div>
-        </div>
-      </div>
-
-      <!-- PATIENT INFO BAR -->
-      <div class="cr-patient-bar">
-        <div class="cr-patient-field">
-          <div class="cr-pf-label">Patient Name</div>
-          <div class="cr-pf-value">${sessionName}</div>
-        </div>
-        <div class="cr-patient-field">
-          <div class="cr-pf-label">Age / Gender</div>
-          <div class="cr-pf-value">${sessionAge}</div>
-        </div>
-        <div class="cr-patient-field">
-          <div class="cr-pf-label">PANSS Score</div>
-          <div class="cr-pf-value" style="color:${panssColor}; font-size:22px;">
-            ${sessionPanss === '—' || !sessionPanss ? '—' : sessionPanss}
-            <span style="font-size:12px; font-weight:500; margin-left:6px; color:${panssColor};">${sessionPanss !== '—' && sessionPanss ? panssLabel : ''}</span>
+      const groupsHTML = featureGroups.map(g => `
+        <div class="cr-group">
+          <div class="cr-group-header" style="background:${g.color};">
+            <span class="cr-group-icon">${g.icon}</span>
+            <span class="cr-group-label">${g.label}</span>
+          </div>
+          <div class="cr-group-body">
+            <table class="cr-feat-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Patient Value</th>
+                  <th>Reference Range</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${g.keys.map(([key, label, unit, ref]) => `
+                  <tr>
+                    <td class="cr-feat-name">${label}</td>
+                    <td class="cr-feat-val">${fmt(key, features[key], unit)}</td>
+                    <td class="cr-feat-ref">${ref || '—'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
           </div>
         </div>
-        <div class="cr-patient-field">
-          <div class="cr-pf-label">Tasks Completed</div>
-          <div class="cr-pf-value" style="color:#166534;">
-            ${Object.keys(features).length > 0 ? '✓ 3 / 3' : '—'}
+      `).join('');
+
+      const panssNum = parseFloat(sessionPanss);
+      const panssColor = isNaN(panssNum) ? '#6b7280' : panssNum > 90 ? '#b91c1c' : panssNum > 60 ? '#b45309' : '#166534';
+      const panssLabel = isNaN(panssNum) ? 'Not recorded' : panssNum > 90 ? 'Severe' : panssNum > 60 ? 'Moderate' : 'Mild / HC';
+
+      body.innerHTML = `
+        <div class="cr-root">
+
+          <!-- HEADER BANNER -->
+          <div class="cr-banner">
+            <div class="cr-banner-left">
+              <div class="cr-clinic-name">NAINA</div>
+              <div class="cr-clinic-sub">Oculomotor Assessment Report</div>
+            </div>
+            <div class="cr-banner-stamp">
+              <div class="cr-stamp-line">${sessionDate}</div>
+              <div class="cr-stamp-label">Assessment Date</div>
+            </div>
           </div>
+
+          <!-- PATIENT INFO BAR -->
+          <div class="cr-patient-bar">
+            <div class="cr-patient-field">
+              <div class="cr-pf-label">Patient Name</div>
+              <div class="cr-pf-value">${sessionName}</div>
+            </div>
+            <div class="cr-patient-field">
+              <div class="cr-pf-label">Age / Gender</div>
+              <div class="cr-pf-value">${sessionAge}</div>
+            </div>
+            <div class="cr-patient-field">
+              <div class="cr-pf-label">PANSS Score</div>
+              <div class="cr-pf-value" style="color:${panssColor}; font-size:22px;">
+                ${sessionPanss === '—' || !sessionPanss ? '—' : sessionPanss}
+                <span style="font-size:12px; font-weight:500; margin-left:6px; color:${panssColor};">${sessionPanss !== '—' && sessionPanss ? panssLabel : ''}</span>
+              </div>
+            </div>
+            <div class="cr-patient-field">
+              <div class="cr-pf-label">Tasks Completed</div>
+              <div class="cr-pf-value" style="color:#166534;">
+                ${Object.keys(features).length > 0 ? '✓ 3 / 3' : '—'}
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION LABEL -->
+          <div class="cr-section-title">
+            <span class="cr-section-rule"></span>
+            <span>Oculomotor Feature Summary</span>
+            <span class="cr-section-rule"></span>
+          </div>
+
+          <!-- FEATURE GROUPS -->
+          <div class="cr-groups-grid">
+            ${groupsHTML}
+          </div>
+
+          <!-- FOOTER NOTE -->
+          <div class="cr-footer-note">
+            ℹ Model outputs are research decision support, not a standalone clinical diagnosis.
+            All 59 extracted oculomotor features are stored in the database for research analysis.
+          </div>
+
         </div>
-      </div>
+      `;
 
-      <!-- SECTION LABEL -->
-      <div class="cr-section-title">
-        <span class="cr-section-rule"></span>
-        <span>Oculomotor Feature Summary</span>
-        <span class="cr-section-rule"></span>
-      </div>
-
-      <!-- FEATURE GROUPS -->
-      <div class="cr-groups-grid">
-        ${groupsHTML}
-      </div>
-
-      <!-- FOOTER NOTE -->
-      <div class="cr-footer-note">
-        ℹ This report was generated with the deployed binary model.
-        No diagnostic classification is produced. All 59 extracted oculomotor features 
-        are stored in the database for research analysis.
-      </div>
-
-    </div>
-  `;
-
-  document.getElementById('report-modal').dataset.sessionId = sessionId;
-  document.getElementById('report-modal').classList.add('show');
-  document.getElementById('report-modal').style.display = 'flex';
-}
+      document.getElementById('report-modal').dataset.sessionId = sessionId;
+      document.getElementById('report-modal').classList.add('show');
+      document.getElementById('report-modal').style.display = 'flex';
+    }
   </script>
 
   <!-- ── FEATURE MODAL (shared) ──────────────────────────────────────────── -->
@@ -977,6 +972,7 @@
   </style>
 
   <script>
+    // Switch the doctor portal between sessions, analytics, and assessment.
     function switchDocTab(tab) {
       if (tab === 'test') {
        window.open(window.location.pathname + '?mode=test', '_blank');
@@ -996,6 +992,7 @@
     // ── NOTES MODAL ──────────────────────────────────────────────────────────
     let _notesSessionId = null;
 
+    // Open the notes editor with the selected session notes.
     function openNotesModal(sessionId, patientName, existingNotes) {
       _notesSessionId = sessionId;
       const decoded = existingNotes.replace(/\\n/g, '\n').replace(/\\&apos;/g, "'");
@@ -1005,11 +1002,13 @@
       document.getElementById('notes-modal').style.display = 'flex';
     }
 
+    // Close the clinical notes editor.
     function closeNotesModal() {
       document.getElementById('notes-modal').style.display = 'none';
       _notesSessionId = null;
     }
 
+    // Send updated clinical notes to the backend.
     async function saveNotes() {
       if (!_notesSessionId) return;
       const notes = document.getElementById('notes-textarea').value;
@@ -1039,6 +1038,7 @@
     }
 
     // ── ANALYTICS ────────────────────────────────────────────────────────────
+    // Retrieve session statistics from the backend.
     async function loadAnalytics() {
       const el = document.getElementById('analytics-content');
       el.innerHTML = '<p style="color:var(--dim);text-align:center;padding:40px;">Loading analytics…</p>';
@@ -1052,6 +1052,7 @@
       }
     }
 
+    // Render session statistics and chart containers in the analytics panel.
     function renderAnalytics(d) {
       const el = document.getElementById('analytics-content');
 
@@ -1131,6 +1132,7 @@
       }
 
       // Draw charts using Chart.js (load if needed)
+      // Create the analytics charts after the chart library is available.
       function drawCharts() {
         // Daily sessions bar chart
         const daily = d.daily_counts || [];
@@ -1212,68 +1214,24 @@
       }
     }
 
+    // Open a separate assessment tab from the admin dashboard.
     function launchTestFromDashboard() {
-      // Open test in a new tab instead of showing it in the current tab
       window.open(window.location.pathname + '?mode=test', '_blank');  
     }
 
+    // Open assessment mode for a clinician without replacing the portal.
     function launchClinicianTest() {
-      // Clinician: open test in same tab (no dashboard to return to in new tab context)
-      // ?mode=test causes initializeUserFromStorage to call showBatteryIntro directly
+      // The mode query opens the assessment without showing a dashboard.
       const url = window.location.pathname + '?mode=test';
       window.open(url, '_blank');
     }
 
-    // Patch doLogin to show role dashboard after auth
-    const _origDoLogin = doLogin;
-  // Find this block (the second doLogin definition near the switchDocTab function) and REPLACE it:
-window.doLogin = async function() {
-  const username = document.getElementById('login-username').value.trim();
-  const password = document.getElementById('login-password').value.trim();
-  const errEl = document.getElementById('login-error');
-  errEl.textContent = '';
-  if (!username || !password) { errEl.textContent = 'Please enter username and password.'; return; }
-  try {
-    const resp = await fetch(`${API}/login`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      credentials: 'include',
-      body: JSON.stringify({ username, password })
-    });
-    const data = await resp.json();
-    if (data.success) {
-      _currentUser = data.username; _currentRole = data.role;
-      localStorage.setItem('currentUser', data.username);   // ← ADD THESE TWO LINES
-      localStorage.setItem('currentRole', data.role);       // ← ADD THESE TWO LINES
-      document.getElementById('login-screen').style.display = 'none';
-      document.getElementById('user-badge').style.display = 'flex';
-      document.getElementById('user-badge-name').textContent = `${data.username} · ${data.role}`;
-      showRoleDashboard();
-    } else { errEl.textContent = data.error || 'Login failed.'; }
-  } catch(e) {
-    const OFFLINE = { admin: 'admin123', doctor: 'doctor123', clinician: 'clinician123' };
-    if (OFFLINE[username] === password) {
-      _currentUser = username; _currentRole = username === 'admin' ? 'admin' : username === 'clinician' ? 'clinician' : 'doctor';
-      localStorage.setItem('currentUser', username);        // ← ADD THESE TWO LINES
-      localStorage.setItem('currentRole', _currentRole);   // ← ADD THESE TWO LINES
-      document.getElementById('login-screen').style.display = 'none';
-      document.getElementById('user-badge').style.display = 'flex';
-      document.getElementById('user-badge-name').textContent = `${username} · ${_currentRole}`;
-      showRoleDashboard();
-    } else { errEl.textContent = 'Invalid credentials.'; }
-  }
-};
-    // Rebind Enter key to new doLogin
-    document.getElementById('login-btn').onclick = () => window.doLogin();
-    document.getElementById('login-password').addEventListener('keydown', e => { if (e.key==='Enter') window.doLogin(); });
-
-    // Update admin stats after sessions load
     const _origLoadAdmin = loadAdminSessions;
+    // Refresh the admin table, then update its summary counters.
     window.loadAdminSessions = async function() {
       await _origLoadAdmin();
-      // Compute stats from table rows
       const rows = document.querySelectorAll('#admin-session-tbody tr');
       document.getElementById('stat-total').textContent = rows.length;
-      const today = new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
       let todayCount = 0;
       const authors = new Set();
       rows.forEach(r => {
@@ -1287,12 +1245,7 @@ window.doLogin = async function() {
   </script>
 
 
-  <!-- ─────────────────────────────────────────────────────────────────────────
-    STEP 1 — CAMERA CHECK SCREEN (native camera preview)
-    The preview only confirms that the webcam can be opened. EyeTracker owns
-    the single MediaPipe FaceMesh runtime used by the assessment.
-     "Proceed" → BatteryController.startVideoCal()
-──────────────────────────────────────────────────────────────────────────── -->
+  <!-- STEP 1: Check camera access, face framing, and lighting before calibration. -->
 
   <style>
     /* ── Face Alignment Screen ──────────────────────────────────────────────── */
@@ -1477,6 +1430,7 @@ window.doLogin = async function() {
 
     const octx = overlayCanvas.getContext('2d');
     const dctx = debugCanvas.getContext('2d');
+    // Register context-loss handling for a canvas used in the camera preview.
     function attachWebglGuard(canvas, label) {
       if (!canvas || canvas._testdiagWebglGuard) return;
       canvas._testdiagWebglGuard = true;
@@ -1498,6 +1452,7 @@ window.doLogin = async function() {
     let goodFrameCount = 0;
     let mpCamera = null;
 
+    // Match preview canvas dimensions to the camera stage.
     function resizeCanvases() {
       const rect = document.getElementById('cam-stage').getBoundingClientRect();
       [overlayCanvas, debugCanvas].forEach(c => {
@@ -1507,6 +1462,7 @@ window.doLogin = async function() {
     }
     window.addEventListener('resize', resizeCanvases);
 
+    // Calculate face-guide oval geometry for the current preview size.
     function getSilhouette(w, h) {
       const cx = w / 2, cy = h * 0.44;
       const ry = (h * CAM_CFG.SILHOUETTE_SCALE) / 2;
@@ -1514,6 +1470,7 @@ window.doLogin = async function() {
       return { cx, cy, rx, ry };
     }
 
+    // Draw the face-position guide around the camera preview.
     function drawSilhouette(state) {
       const w = overlayCanvas.width, h = overlayCanvas.height;
       octx.clearRect(0, 0, w, h);
@@ -1563,6 +1520,7 @@ window.doLogin = async function() {
       octx.restore();
     }
 
+    // Overlay the detected face bounding box on the preview.
     function drawDebugBox(box, w, h, aligned) {
       dctx.clearRect(0, 0, w, h);
       if (!box) return;
@@ -1576,6 +1534,7 @@ window.doLogin = async function() {
       dctx.restore();
     }
 
+    // Score how closely the detected face matches the guide position and size.
     function computeAlignmentScore(detection, cw, ch) {
       const box = detection.boundingBox;
       const sil = getSilhouette(cw, ch);
@@ -1595,6 +1554,7 @@ window.doLogin = async function() {
     const offscreen = document.createElement('canvas');
     const octxOff   = offscreen.getContext('2d', { willReadFrequently: true });
 
+    // Estimate face brightness, contrast, and backlighting from the current frame.
     function computeLightingScore(detection) {
       const box = detection.boundingBox;
       const videoEl = document.getElementById('cam-stage').querySelector('video');
@@ -1614,6 +1574,7 @@ window.doLogin = async function() {
       if (sw <= 0 || sh <= 0) return 0;
       const faceData  = octxOff.getImageData(sx, sy, sw, sh).data;
       const frameData = octxOff.getImageData(0, 0, W, H).data;
+      // Calculate the average luminance of an image region.
       function avgLuma(data) {
         let sum = 0, count = 0;
         for (let i = 0; i < data.length; i += 4) {
@@ -1621,6 +1582,7 @@ window.doLogin = async function() {
         }
         return count ? sum / count : 0;
       }
+      // Measure luminance variation in an image region.
       function lumaVariance(data, m) {
         let v = 0, count = 0;
         for (let i = 0; i < data.length; i += 4) {
@@ -1643,17 +1605,20 @@ window.doLogin = async function() {
       return Math.min(100, Math.max(0, Math.round(brightness * 0.6 + contrastScore * 0.4 - backlightPenalty)));
     }
 
+    // Choose a status color for a numeric quality score.
     function scoreColor(val, threshold) {
       if (val >= threshold)          return '#22c55e';
       if (val >= threshold * 0.65)   return '#f59e0b';
       return '#ef4444';
     }
 
+    // Update the camera-check status banner.
     function setStatus(type, msg) {
       statusBanner.className = type;
       statusText.textContent = msg;
     }
 
+    // Refresh the displayed alignment and lighting scores.
     function updateMetrics(alignPct, lightPct) {
       alignScoreEl.textContent = alignPct !== null ? Math.round(alignPct * 100) + '%' : '—';
       lightScoreEl.textContent = lightPct !== null ? String(lightPct) : '—';
@@ -1669,6 +1634,7 @@ window.doLogin = async function() {
       }
     }
 
+    // Show the user the next camera-positioning action.
     function updateTips(hasFace, aligned, lightScore) {
       if (!hasFace) {
         tipsEl.innerHTML = '<strong>No face detected.</strong> Make sure your face is fully visible and well-lit.';
@@ -1681,6 +1647,7 @@ window.doLogin = async function() {
       }
     }
 
+    // Update camera guidance when MediaPipe returns a face-detection result.
     function onResults(results) {
       const cw = overlayCanvas.width, ch = overlayCanvas.height;
       const detections = results.detections || [];
@@ -1714,6 +1681,7 @@ window.doLogin = async function() {
       else               setStatus('good',    'Great lighting! Face aligned — ready to proceed.');
     }
 
+    // Start the pre-assessment face and lighting checks on the active camera stream.
     async function initFaceAlignment() {
       try {
         const video = document.getElementById('cam-stage').querySelector('video');
@@ -1725,8 +1693,7 @@ window.doLogin = async function() {
           return;
         }
 
-        // Restore the original working camera-check runtime. The model added
-        // to this build must not change the pre-test face/lighting gate.
+        // Run a lightweight face detector for the pre-assessment framing and lighting check.
         const faceDetector = new FaceDetection({
           locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
         });
@@ -1743,9 +1710,7 @@ window.doLogin = async function() {
         drawSilhouette('neutral');
         setStatus('idle', 'Camera active — align your face with the guide');
 
-        // Keep using the preview stream for the check. BatteryController's
-        // teardown hands this same stream to EyeTracker, avoiding a second
-        // getUserMedia call and preserving the new camera/FPS changes.
+        // Reuse this preview stream when the assessment starts, avoiding a second camera request.
         const mpCamera = new Camera(video, {
           onFrame: async () => {
             if (!window._previewStopping) await faceDetector.send({ image: video });
@@ -1772,6 +1737,7 @@ window.doLogin = async function() {
       }
     }
 
+    // Stop the camera-check detector and either release or hand off its stream.
     window._stopCameraPreview = async function (opts) {
       const preserveStream = !!(opts && opts.preserveStream);
       const t0 = performance.now();
@@ -1831,7 +1797,7 @@ window.doLogin = async function() {
       }
     };
 
-    // Expose init so BatteryController.start() can call it after WebGazer injects video
+    // Expose the camera-check initializer to BatteryController.
     window._initFaceAlignment = initFaceAlignment;
 
     // Draw initial state
@@ -2407,6 +2373,7 @@ window.doLogin = async function() {
       </div>
       <!-- inject logged-in user into notes label -->
       <script>
+        // Populate the notes-author label once login information is available.
         (function checkNotesUser() {
           const label = document.getElementById('notes-author-label');
           if (label && window._currentUser) label.textContent = `— author: ${window._currentUser}`;

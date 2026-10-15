@@ -1,18 +1,19 @@
 # NAINA / SchizoEye — Oculomotor Diagnostic Battery
 
-A browser-based eye-tracking assessment that runs a three-task oculomotor
-battery (smooth pursuit, fixation/antisaccade, free viewing), extracts 59
-clinically-motivated gaze features entirely client-side, and sends them to a
-Flask backend for model inference (Healthy vs Schizophrenia), report
-generation, and storage.
+A browser-based eye-tracking research prototype that runs a three-task
+oculomotor battery (smooth pursuit, fixation/antisaccade, free viewing),
+extracts 59 gaze features client-side, and sends them to a Flask backend for
+model inference (Healthy vs Schizophrenia), report generation, and storage.
 
 No specialized eye-tracking hardware is required — gaze is estimated from a
 regular webcam via [MediaPipe FaceMesh](https://developers.google.com/mediapipe)
 iris landmarks and a per-session ridge-regression calibration.
 
 > **Decision-support only.** The model output is not a standalone clinical
-> diagnosis. See `report_template.html` for the disclaimer shown on every
-> generated report.
+> diagnosis. The current model is trained on a synthetic dataset and has not
+> been established as a clinically validated diagnostic tool. See
+> [`backend/templates/report_template.html`](backend/templates/report_template.html)
+> for the report disclaimer.
 
 ---
 
@@ -22,12 +23,13 @@ iris landmarks and a per-session ridge-regression calibration.
 - [Repository layout](#repository-layout)
 - [How a session works](#how-a-session-works)
 - [The 59-feature pipeline](#the-59-feature-pipeline)
+- [Model training](#model-training)
 - [Local development](#local-development)
 - [Environment variables](#environment-variables)
 - [Deployment](#deployment)
 - [API reference](#api-reference)
-- [Known limitations / roadmap](#known-limitations--roadmap)
-- [Where to look when something breaks](#where-to-look-when-something-breaks)
+- [Limitations](#limitations)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -37,41 +39,44 @@ iris landmarks and a per-session ridge-regression calibration.
 ┌─────────────────────────┐        ┌──────────────────────────┐        ┌──────────────┐
 │  Frontend (Netlify)     │  HTTPS │  Backend (Render)         │        │ MongoDB Atlas│
 │  vanilla JS + HTML/CSS  │ ─────▶ │  Flask + Gunicorn         │ ─────▶ │ + GridFS     │
-│  TF.js + MediaPipe      │ ◀───── │  XGBoost (calibrated)     │ ◀───── │              │
+│  TF.js + MediaPipe      │ ◀───── │  XGBoost classifier       │ ◀───── │              │
 │  FaceMesh, Plotly       │        │  WeasyPrint (PDF)         │        └──────────────┘
 └─────────────────────────┘        └──────────────────────────┘
 ```
 
 - **Frontend** — Gaze estimation, calibration, all three tasks, results
-  rendering, and the entire 59-feature extraction pipeline run in the
-  browser. The backend only ever sees the final extracted features (plus raw
-  gaze CSVs and rendered chart images) over HTTPS.
+  rendering, and the 59-feature extraction pipeline run in the browser. The
+  backend receives the features along with session details and, when saving,
+  raw gaze data and rendered chart images.
 - **Backend** — a single Flask app (`app.py`) that classifies feature
   vectors with a pre-trained XGBoost model, persists
   sessions to MongoDB Atlas (raw gaze as GridFS CSVs, generated PDF reports
   as GridFS binaries), and renders PDF reports with WeasyPrint from a Jinja
-  template (`report_template.html`).
+  template (`backend/templates/report_template.html`).
 - **Model** — trained and exported by `retrain_fixed.ipynb`
-  (`model.pkl` / `model_calibrated.pkl`, `label_encoder.pkl`,
-  `feature_names.pkl`), loaded once at backend startup from
-  `backend/model_artifacts/`.
+  (`model.pkl`, `label_encoder.pkl`, `feature_names.pkl`), loaded once at
+  backend startup from `backend/model_artifacts/`.
 
 ---
 
 ## Repository layout
 
-| File | Role |
+| Path | Role |
 |---|---|
-| `index.html` | Entry point. Login, doctor/admin/clinician dashboards, all in-battery screens (camera check, calibration guide, SPEM canvas, SchizoEye canvas, free-viewing stage, results screen), and the dashboard's report/notes/feature modals. |
-| `config.js` | Resolves the backend API base URL (`localhost:5000` in local dev, the deployed Render URL otherwise). |
-| `camera-check.js` | Step 1 of the protocol: live framing/lighting scoring against the real camera feed EyeTracker is already using, plus an infrared-camera detector and camera picker. |
-| `eye-tracker.js` | The gaze engine (`EyeTracker` global). Owns the camera, the MediaPipe FaceMesh detection loop, the 20-point calibration UI + held-out validation, the Kalman-filtered gaze stream, and `onGaze()`/`isEmitting()` for consumers. |
-| `gaze-collector.js` | `RawGazeCollector` — records raw gaze samples via a push subscription to `EyeTracker.onGaze()`. |
-| `battery-controller.js` | The main orchestrator (`BatteryController`). Runs all three tasks, renders the results screen (Plotly graphs, scatter plots, clinical flags), and contains the full 59-feature extraction pipeline (a pure-JS port of the training-time feature code) plus the classify/save/PDF pipeline. |
-| `feature_extractor.html` | Standalone offline tool: replay three raw gaze CSVs from a past session through the same extraction pipeline (useful for auditing feature math without re-running a live test). |
-| `app.py` | Flask backend: auth, `/classify`, `/save_results`, `/sessions*`, `/analytics`, `/generate-report`. |
-| `report_template.html` | Jinja/HTML template WeasyPrint renders into the clinical PDF report. |
-| `retrain_fixed.ipynb` | Model training notebook — trains a plain and an isotonic-calibrated XGBoost classifier on the 59-feature synthetic dataset and exports the artifacts `app.py` loads. |
+| `frontend/index.html` | Application entry point: login, dashboards, assessment screens, results, and report/notes/feature views. |
+| `frontend/config.js` | Selects the API base URL: localhost for local development and the configured Render backend otherwise. |
+| `frontend/camera-check.js` | Camera framing and lighting check, infrared-camera detector, and camera picker. |
+| `frontend/eye-tracker.js` | Webcam gaze estimation, MediaPipe FaceMesh detection, calibration, and gaze stream. |
+| `frontend/gaze-collector.js` | Collects gaze samples from `EyeTracker`. |
+| `frontend/battery-controller.js` | Runs the assessment tasks, extracts features, and calls the backend for inference and report generation. |
+| `frontend/feature_extractor.html` | Offline tool for replaying recorded gaze CSVs through the feature extractor. |
+| `frontend/stimuli/` | Images used in the free-viewing task. |
+| `backend/app.py` | Flask API for login, classification, session storage and retrieval, analytics, and PDF generation. |
+| `backend/templates/report_template.html` | Jinja template used to render PDF reports. |
+| `backend/model_artifacts/` | Model, label encoder, and feature-name files loaded by the backend at startup. |
+| `backend/requirements.txt` / `backend/Dockerfile` | Python dependencies and Docker deployment configuration. |
+| `Models/retrain_fixed.py` / `Models/retrain_fixed.ipynb` | Script and notebook for evaluating and training the XGBoost model. |
+| `Models/synthetic_eye_tracking_3class_59features_RESCALED.csv` | Synthetic dataset consumed by the model-training script. |
 
 ---
 
@@ -96,8 +101,9 @@ Results screen
   ├─ renders SPEM graphs, SZ scatter/waterfall plots, FV sample-count table
   ├─ extracts 59 oculomotor features from the three raw gaze streams (client-side)
   ├─ POST /classify   → Healthy vs Schizophrenia probabilities
-  └─ POST /save_results → stores features, raw CSVs (GridFS), chart images, and a
-                          generated PDF report; returns a downloadable PDF
+  ├─ POST /generate-report → downloads a PDF generated from the current results
+  └─ POST /save_results → stores features, raw CSVs (GridFS), chart images, and
+                          a PDF report when report generation succeeds
 ```
 
 Every task is gated on `EyeTracker.isCalibrated()` and `EyeTracker.isEmitting()`
@@ -109,9 +115,9 @@ stalled detector) from reaching the results screen unnoticed.
 
 ## The 59-feature pipeline
 
-`battery-controller.js` (and, for offline replay, `feature_extractor.html`)
-implements the same feature-extraction pipeline that produced the model's
-training data:
+`frontend/battery-controller.js` (and, for offline replay,
+`frontend/feature_extractor.html`) extracts the 59 features expected by the
+model:
 
 - **Event detection** — an adaptive, noise-scaled velocity-threshold
   detector (Engbert & Kliegl style) classifies each gaze sample as
@@ -142,79 +148,135 @@ training data:
   value and is flagged in a separate `data_quality` map rather than
   silently reported as an extreme value.
 
-All 59 feature names, in the exact order the model expects them, live in
-`FEATURE_ORDER` (duplicated in `battery-controller.js`, `app.py`, and
-`index.html`'s dashboard modal — keep these in sync if the feature set ever
-changes).
+The ordered feature names are defined as `FEATURE_ORDER` in
+`frontend/battery-controller.js`, mirrored as `REQUIRED_FEATURES` in
+`backend/app.py`, and also listed in the dashboard modal in
+`frontend/index.html`. Keep these definitions in sync if the feature set
+changes.
+
+---
+
+## Model training
+
+The training data is the synthetic CSV in `Models/`; it is not a clinical
+cohort. The training script maps `HC` to `Healthy` and combines `FES` and
+`CSZ` as `Schizophrenia`, reports stratified five-fold out-of-fold metrics,
+then fits one XGBoost classifier on the full dataset.
+
+To retrain, install the backend Python dependencies, then run the script from
+the `Models` directory so it can find the CSV:
+
+```text
+python -m pip install -r backend/requirements.txt
+cd Models
+python retrain_fixed.py
+```
+
+The script writes `model.pkl`, `label_encoder.pkl`, and `feature_names.pkl` to
+the current directory. To use the newly trained model, copy those three files
+to `backend/model_artifacts/` before starting or redeploying the backend. The
+notebook performs the same evaluation and training workflow.
 
 ---
 
 ## Local development
 
-The backend is never run locally against production data — point the
-frontend at the deployed Render backend and just serve the static frontend
-files:
+Use a local or otherwise approved test database when developing. Do not send
+real patient data to a production backend from a local development session.
+The frontend needs to be served over HTTP (rather than opened as a `file://`
+URL) for browser camera access and API requests.
 
 ```bash
-python -m http.server 8000
-# open http://localhost:8000
+python -m http.server 8000 --directory frontend
 ```
 
-`config.js` auto-detects `localhost`/`127.0.0.1` and points at
-`http://localhost:5000` in that case — so if you *do* want to run the Flask
-backend locally too:
+Open `http://localhost:8000`. `frontend/config.js` points the local frontend
+at `http://localhost:5000`. In a second terminal, create and activate a
+virtual environment:
 
-```bash
-cd backend
-pip install -r requirements.txt
-python app.py            # serves on :5000, needs the env vars below
+```text
+# Windows PowerShell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# macOS/Linux
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-You'll need `backend/model_artifacts/{model_calibrated.pkl or model.pkl,
-label_encoder.pkl, feature_names.pkl}` present locally (see
-[retrain_fixed.ipynb](#repository-layout)) and a reachable `MONGODB_URI` for
-anything beyond `/classify` to work.
+Create `backend/.env` with the local settings below (replace each placeholder;
+the file is ignored by Git), then install the backend dependencies and start
+Flask from the repository root:
+
+```text
+MONGODB_URI=<your-local-or-test-mongodb-uri>
+MONGODB_DB_NAME=SchizoEye
+ADMIN_PASSWORD=<local-admin-password>
+DOCTOR_PASSWORD=<local-doctor-password>
+CLINICIAN_PASSWORD=<local-clinician-password>
+SECRET_KEY=<persistent-random-secret>
+```
+
+Then run:
+
+```text
+python -m pip install -r backend/requirements.txt
+python backend/app.py
+```
+
+The model files must be present in `backend/model_artifacts/` for
+`/classify`. A reachable MongoDB database named `SchizoEye` is needed for
+session storage, dashboards, and analytics. Without MongoDB, `/health` still
+responds and classification can work, but database-backed features are
+unavailable.
 
 ---
 
 ## Environment variables
 
-Set these on the backend (Render):
+The backend loads `backend/.env` for local development and reads the same
+variables from the deployment environment in production. Do not commit
+credentials or production connection strings.
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `MONGODB_URI` | Yes | Atlas connection string. Without it, every DB-backed route (`/sessions*`, `/save_results`, `/analytics`) returns 503. |
-| `MONGODB_DB_NAME` | No (default `SchizoEye`) | Must resolve to a database literally named `SchizoEye` — `_get_scoped_database()` refuses anything else. |
-| `SECRET_KEY` | Recommended | Flask session signing key. A random one is generated per-process if unset, which invalidates sessions on every restart. |
-| `CORS_ORIGINS` | If frontend origin changes | Comma-separated extra allowed origins, added on top of the hardcoded Netlify/localhost defaults. Netlify deploy previews (`https://<hash>--naina-schizo.netlify.app`) are already matched by regex. |
-| `INTEGRATION_API_KEY` | For partner-site embedding | Required header (`X-Integration-Key`) on `POST /integration/test-sessions` to mint a `?token=` test link for a patient with no login session. |
-| `TEST_FRONTEND_URL` | For partner-site embedding | Base URL used to build the `test_url` returned by the integration endpoint. |
-| `PORT` | No (default `5000`) | Local dev only — Render sets this itself. |
+| `MONGODB_URI` | Required for database features | MongoDB connection string. Without a successful connection, session, storage, and analytics features are unavailable. |
+| `MONGODB_DB_NAME` | No (default `SchizoEye`) | Database name. The backend rejects names other than `SchizoEye`. |
+| `ADMIN_PASSWORD` | Required for admin login | Password for the built-in `admin` username. |
+| `DOCTOR_PASSWORD` | Required for doctor login | Password for the built-in `doctor` username. |
+| `CLINICIAN_PASSWORD` | Required for clinician login | Password for the built-in `clinician` username. |
+| `SECRET_KEY` | Recommended | Persistent Flask session-signing key. If unset, a new random key is generated at each process start. |
+| `CORS_ORIGINS` | Optional | Comma-separated additional browser origins. The production Netlify site, Netlify deploy previews, and the documented localhost origins are allowed by default. |
+| `PORT` | No (default `5000`) | Port used by the local Flask server and the container; the hosting platform supplies it in deployment. |
 
-Set this on the frontend (Netlify), or edit `config.js` directly:
+The frontend API base can be overridden by defining
+`window.SCHIZOEYE_API_BASE` before `frontend/config.js` loads, or by changing
+the default in `frontend/config.js`:
 
 | Variable | Purpose |
 |---|---|
-| `SCHIZOEYE_API_BASE` (`window.SCHIZOEYE_API_BASE`) | Overrides the auto-detected backend base URL. |
+| `window.SCHIZOEYE_API_BASE` | Overrides the local/deployed API base URL selected by `config.js`. |
 
 ---
 
 ## Deployment
 
-- **Frontend** — static deploy on Netlify, no build step.
-- **Backend** — Render, Docker build with `backend/` as the build context
-  (so `backend/templates/report_template.html` must exist *inside*
-  `backend/`, not only in a sibling `frontend/templates/`). Start command:
+- **Frontend** — deploy the contents of `frontend/` as a static site (the
+  current configuration allows the production Netlify domain and its deploy
+  previews). There is no frontend build step.
+- **Backend** — build `backend/Dockerfile` with `backend/` as the build
+  context. The Docker image includes `backend/templates/report_template.html`
+  and the model artifacts from `backend/model_artifacts/`. The container starts
+  Gunicorn with one worker, four threads, a 120-second timeout, and request
+  recycling; it binds to the platform-provided `PORT`:
 
-  ```r
-  gunicorn app:app --workers 1 --threads 4 --timeout 180 --graceful-timeout 30
+  ```text
+  gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 120 --max-requests 200 --max-requests-jitter 50 app:app
   ```
 
-  One worker, because matplotlib + WeasyPrint inside Render's free-tier
-  512 MB will not reliably survive two. Render's free tier also sleeps
-  after ~15 minutes idle; the frontend pings `/health` periodically during
-  a session and warms/retries before `/save_results` to avoid the first
-  post-battery request landing on a sleeping instance.
+  Configure the database and login credentials in the hosting environment.
+  `/health` reports whether MongoDB is connected; it does not itself establish
+  or refresh a database connection.
 
 ---
 
@@ -224,16 +286,52 @@ All routes are on the Flask backend (`app.py`).
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/health` | GET | Liveness + Mongo connection status. Also used as a keep-alive ping during a session. |
-| `/login` / `/logout` | POST | Session-cookie auth for the three built-in roles. |
-| `/classify` | POST | `{features: {...59 names...}}` → predicted label, confidence, per-class probabilities. 503 if the model artifacts didn't load; 405-turned-404 issues here usually mean the route itself isn't deployed. |
-| `/save_results` | POST | Persists a full session: raw gaze CSVs (GridFS), chart/scatter/heatmap images, the 59 features, the prediction, and a generated PDF report (GridFS). Returns the new session id and a `report_url`. |
-| `/sessions` | GET | Summary list for the dashboards. |
-| `/sessions/search?q=` | GET | Name/patient-ID search. |
-| `/sessions/<id>/pdf` | GET | Streams the stored PDF; regenerates on the fly if none was ever stored. |
-| `/sessions/<id>/csv/<fv\|spem\|sz>` | GET | Raw gaze CSV download. |
-| `/sessions/<id>/notes` | POST | Updates clinician notes and regenerates the stored PDF to include them. |
-| `/sessions/export_all_features` | GET | One CSV of all sessions' 59 features, for offline analysis. |
-| `/analytics` | GET | Aggregates for the admin dashboard's charts (daily volume, PANSS/age/gender distributions, feature averages). |
-| `/generate-report` | POST | Stateless PDF generation from a caller-supplied payload — used by the results screen's "Download PDF Report" button, which already has fresh chart images in the DOM. |
+| `/health` | GET | Returns backend status and a `mongodb_connected` flag. A successful response does not mean MongoDB is connected or the model loaded. |
+| `/login` / `/logout` | POST | Establishes or clears a Flask session for the `admin`, `doctor`, or `clinician` account. |
+| `/classify` | POST | Accepts `{ "features": { ... } }`; returns the predicted label, confidence, class probabilities, and missing feature names. Requires the model artifacts at startup. |
+| `/save_results` | POST | Stores session metadata and features in MongoDB, with gaze CSVs and a PDF in GridFS when those uploads/generation succeed. Returns a session ID and stored file references. |
+| `/sessions` | GET | Returns up to 200 recent session summaries for the dashboards. |
+| `/sessions/search?q=<query>` | GET | Searches session name and patient ID; returns up to 50 matches. |
+| `/sessions/<session_id>/pdf` | GET | Downloads a stored report, regenerating it from saved session data if no report is stored. |
+| `/sessions/<session_id>/csv/<fv\|spem\|sz>` | GET | Downloads the requested raw gaze CSV if it was stored. |
+| `/sessions/<session_id>/notes` | POST | Updates clinician notes and attempts to regenerate the stored PDF. |
+| `/sessions/export_all_features` | GET | Downloads saved session metadata and the 59 model features as CSV. |
+| `/analytics` | GET | Returns aggregate session data for the dashboard charts. |
+| `/generate-report` | POST | Generates a PDF from the supplied report payload and returns it as a download. |
 
+The session and analytics endpoints require a working MongoDB connection.
+
+---
+
+## Limitations
+
+- This is a research prototype, not a clinically validated diagnostic system.
+- The current XGBoost model is trained from the synthetic dataset in `Models/`;
+  high cross-validation scores on that dataset do not demonstrate performance
+  on real patients or other devices.
+- Gaze estimates depend on webcam quality, lighting, face visibility,
+  calibration, screen measurements, and browser support.
+- The frontend loads several libraries from public CDNs and needs internet
+  access for those dependencies.
+- MongoDB-backed features require database connectivity; `/health` can return
+  successfully while reporting `mongodb_connected: false`.
+
+---
+
+## Troubleshooting
+
+- **Camera does not start:** serve the frontend on `localhost` or over HTTPS,
+  grant camera permission, and close other applications using the webcam.
+- **Classification returns 503:** confirm `model.pkl`, `label_encoder.pkl`,
+  and `feature_names.pkl` are present in `backend/model_artifacts/`, then
+  restart the backend.
+- **Session or analytics requests fail:** check `MONGODB_URI`, confirm the
+  database is named `SchizoEye`, and verify that the database permits
+  connections from the backend host. Check `mongodb_connected` at `/health`.
+- **Browser reports a CORS error:** verify the frontend is using the intended
+  API base and add its exact origin to `CORS_ORIGINS` if it is not in the
+  backend defaults.
+- **PDF generation fails:** confirm
+  `backend/templates/report_template.html` is included in the deployment and
+  install backend dependencies from `backend/requirements.txt` (the Dockerfile
+  also installs the required system libraries).

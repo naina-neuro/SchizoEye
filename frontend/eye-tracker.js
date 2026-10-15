@@ -1,104 +1,21 @@
+'use strict';
+
 /**
- * EyeTracker — NeurOcular Engine  v13.1
- * ════════════════════════════════════════════════════════════════
- *
- *  WHAT CHANGED IN v13.1 (FIX FREQ-1)
- *  ─────────────────────────────────
- *  v13's frame loop ran detector.estimateFaces() on every requestAnimationFrame
- *  tick, with no check that the <video> element had actually presented a new
- *  camera frame since the last tick. On a display refreshing faster than the
- *  negotiated camera frame rate (confirmed via track.getSettings().frameRate
- *  and independently via requestVideoFrameCallback — see validation notes),
- *  this silently re-ran MediaPipe on an unchanged frame. Because WebGL/MediaPipe
- *  inference is not perfectly deterministic, each such re-run still produced a
- *  measurably different (noisy) gaze sample rather than an identical one —
- *  inflating the emitted sample rate well above the true camera delivery rate
- *  (observed: 83–120 emitted "Hz" against a camera independently confirmed at
- *  ~58Hz) while injecting non-physiological jitter into the recorded signal.
- *
- *  Fix: a lightweight, independent requestVideoFrameCallback chain
- *  (startFrameFreshnessTracking / stopFrameFreshnessTracking) increments a
- *  frame counter exactly once per genuinely new presented frame. frameTick()
- *  now gates the detector call on that counter having advanced since the last
- *  processed tick — verified in simulation to converge the detector-call rate
- *  to the true camera frame rate regardless of display refresh rate. This does
- *  not replace the rAF-driven loop or its watchdog/stall-recovery behavior
- *  (see v13 notes below) — it only gates whether a given rAF tick does work.
- *
- *  WHAT CHANGED VS v12 (and why) — unchanged from v13, kept for reference
- *  ─────────────────────────────
- *  1. ONE CAMERA, ONE PREVIEW, ONE DETECTOR.
- *     v12 opened a getUserMedia stream in BatteryController.start() for the
- *     lighting screen, then EyeTracker opened/handed-off its own, then
- *     showAlignmentScreen() drew a SECOND camera preview ("Eye Tracker
- *     Ready") before the grid. That is the "camera opens twice / extra
- *     calibration screen" symptom. showAlignmentScreen() is gone. The
- *     camera-check screen now previews EyeTracker's own <video> through
- *     startPreview(), so what the operator sees is literally what the
- *     tracker sees, and nothing is opened a second time.
- *
- *  2. FRAME LOOP IS rAF-DRIVEN, NOT rVFC-DRIVEN (for the DETECTION loop).
- *     v12 drove inference from requestVideoFrameCallback on a video parked
- *     at left:-9999px. Chromium throttles (and in some states stops) rVFC
- *     for videos it considers non-rendered, and the element was also moved
- *     between three different parents during startup. When rVFC stopped
- *     firing, processGazeSample() never ran, no onGaze listener ever fired,
- *     and every task recorded zero rows -> "FV:0 SPEM:0 SZ:0". The loop is
- *     now plain requestAnimationFrame (60 Hz >> the 33-50 FPS MediaPipe
- *     ceiling, so nothing is lost) with a 2 s stall watchdog that clears a
- *     stuck _detectorBusy flag and restarts the loop. v13.1 adds a SEPARATE,
- *     independent rVFC chain purely as a frame-freshness signal (see FIX
- *     FREQ-1 above) — this is safe because parkVideo() already keeps the
- *     video in-layout at nonzero size/opacity, which is what makes rVFC
- *     fire reliably here (confirmed empirically), unlike the fully
- *     off-screen video that caused v12's problem.
- *
- *  3. CAMERA SELECTION NO LONGER PREFERS IR CAMERAS.
- *     v12 scored device labels with `label.includes('ir')`, which matches
- *     "Wireless", "Virtual", "Direct", "IR Camera", ... On laptops with a
- *     Windows Hello IR sensor this selected the infrared camera: a dark
- *     red/greyscale image that FaceMesh cannot land 478 landmarks on. The
- *     matcher is now word-boundary based and *demotes* IR/depth devices.
- *     listCameras()/switchCamera() let the operator override from the UI.
- *
- *  4. CALIBRATION IS AUTOMATIC AND SELF-CHECKING.
- *     33 points x "press SPACE" is 33 chances to capture a frame where the
- *     participant is not actually on the dot. Now: 20 points (5x4), dot
- *     travels, settles, shrinks, and samples are pulled from the loop's
- *     latest landmarks with a quality gate; weak points are retried once;
- *     then 5 held-out validation points measure real error in pixels and
- *     the result is shown with Continue / Recalibrate.
- *
- *  5. THE GAZE CURSOR IS HIDDEN AFTER CALIBRATION.
- *     A dot following the participant's gaze during SPEM / antisaccade /
- *     free viewing is a closed feedback loop and contaminates every task.
- *     setCursorVisible(true) if you want it back for debugging.
- *
- *  API (superset of v12 — nothing that battery-controller.js called was removed)
- *  ─────────────────────────────────────────────────────────────────────────
- *    window._startEyeTrackerNow()          open camera + load FaceMesh
- *    EyeTracker.startPreview(el, onStats)  show live preview inside el
- *    EyeTracker.stopPreview()              park the video, keep the stream
- *    EyeTracker.listCameras()              -> [{deviceId,label,isIR}]
- *    EyeTracker.switchCamera(deviceId)     re-open on another device
- *    EyeTracker.calibrate()                full grid + validation
- *    EyeTracker.recalibrate()              alias of calibrate()
- *    EyeTracker.startDirectCalibration()   alias of calibrate()
- *    EyeTracker.isCalibrated() / getCalibrationError()
- *    EyeTracker.onGaze(fn) / offGaze(fn) / getGaze()
- *    EyeTracker.isEmitting()               true if gaze fired in last 1.5 s
- *    EyeTracker.getPerformanceStats()      incl. emitting / lastEmitAgoMs
- *    EyeTracker.setCursorVisible(bool)
- *    EyeTracker.pause() / resume() / stop()
+ * Manages camera input, face-landmark detection, gaze calibration, and gaze events.
+ * Exposes tracking controls and performance data through the EyeTracker API.
  */
 
-'use strict';
 
 const EyeTracker = (() => {
 
+  // ── Shared helpers ──────────────────────────────────────────
+  /** Find a page element by its ID. */
   const $ = (id) => document.getElementById(id);
+  /** Return the current viewport width. */
   const W = () => window.innerWidth;
+  /** Return the current viewport height. */
   const H = () => window.innerHeight;
+  /** Wait for the specified number of milliseconds. */
   const nap = (ms) => new Promise(r => setTimeout(r, ms));
 
   // ── Configuration ────────────────────────────────────────────
@@ -133,9 +50,7 @@ const EyeTracker = (() => {
     FACE_WAIT_MS    : 20000,
   };
 
-  // 640x480@60 first: MediaPipe FaceMesh tops out near 33-50 FPS anyway, and
-  // 60 FPS modes are far more widely supported (and better exposed) than the
-  // 120 FPS modes v12 asked for first.
+  // Try common camera modes in descending preference, then use browser defaults.
   const CAMERA_CONSTRAINT_SETS = [
     { name: '640x480@60',  video: { width:{ideal:640},  height:{ideal:480}, frameRate:{ideal:60} } },
     { name: '1280x720@30', video: { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} } },
@@ -143,10 +58,11 @@ const EyeTracker = (() => {
     { name: 'default',     video: {} },
   ];
 
-  // Word-boundary match so "Wireless"/"Virtual"/"Direct" are not read as "ir".
+  // Avoid matching "ir" inside unrelated camera labels such as "Wireless".
   const IR_LABEL_RE = /(^|[^a-z])(ir|infra[- ]?red|depth|tof|3d)([^a-z]|$)/i;
   const CAMERA_PREF_KEY = 'neurocular.cameraId';
 
+  /** Log tracker diagnostics through the test hook when available. */
   function tdiag(msg, extra) {
     if (typeof window.TestDiag === 'function') { window.TestDiag(msg, extra); return; }
     if (extra !== undefined) console.log('[EyeTracker] ' + msg, extra);
@@ -168,12 +84,7 @@ const EyeTracker = (() => {
   let _watchdog = null;
   let _detectorBusy = false;
 
-  // FIX FREQ-1: independent frame-freshness signal, decoupled from the rAF
-  // detection loop below. _rvfcFrameCount increments once per genuinely new
-  // presented video frame (confirmed empirically to track the true camera
-  // delivery rate on this hardware/browser combination, unlike rAF which
-  // tracks display refresh). frameTick() compares against
-  // _lastProcessedFrameCount to decide whether this tick has new data.
+  // Tracks newly presented video frames independently of display refresh.
   let _rvfcFrameCount = 0, _lastProcessedFrameCount = -1, _rvfcActive = false;
 
   let _lastKp = null, _lastKpTs = 0, _lastQuality = 0, _lastGeom = null;
@@ -203,7 +114,7 @@ const EyeTracker = (() => {
   let _renderX = 0, _renderY = 0;
   const _featureBuf = new Float64Array(12);
 
-  // ── Kalman filter (unchanged maths from v12) ─────────────────
+  // ── Kalman filter ───────────────────────────────────────────
   const KF = {
     px:0, vx:0, py:0, vy:0,
     pPP:500, pPV:0, pVP:0, pVV:500,
@@ -212,6 +123,7 @@ const EyeTracker = (() => {
   };
   let lastKfTime = null;
 
+  /** Predict the next gaze position and update the filter covariance. */
   function kfPredict(dt) {
     KF.px += KF.vx * dt;
     const p00=KF.pPP+dt*(KF.pPV+KF.pVP)+dt*dt*KF.pVV+KF.Q_p;
@@ -222,6 +134,7 @@ const EyeTracker = (() => {
     const q01=KF.qPV+dt*KF.qVV, q10=KF.qVP+dt*KF.qVV, q11=KF.qVV+KF.Q_v;
     KF.qPP=q00; KF.qPV=q01; KF.qVP=q10; KF.qVV=q11;
   }
+  /** Correct the predicted gaze position using the latest measurement. */
   function kfUpdate(mx, my) {
     const pPP0=KF.pPP, pPV0=KF.pPV;
     const Sx=pPP0+KF.R, KgP=pPP0/Sx, KgV=KF.pVP/Sx, ex=mx-KF.px;
@@ -234,6 +147,7 @@ const EyeTracker = (() => {
     KF.qPP=qPP0*(1-LgP); KF.qPV=qPV0*(1-LgP);
     KF.qVP-=LgV*qPP0;    KF.qVV-=LgV*qPV0;
   }
+  /** Smooth a raw gaze estimate with the Kalman filter. */
   function applyKalman(rawX, rawY, tsMs) {
     if (!KF.inited) { KF.px=rawX; KF.py=rawY; KF.vx=0; KF.vy=0; KF.inited=true; lastKfTime=tsMs; return; }
     const dt = Math.max(0.001, Math.min((tsMs - lastKfTime)/1000, 0.1));
@@ -242,7 +156,8 @@ const EyeTracker = (() => {
     kfUpdate(rawX, rawY);
   }
 
-  // ── Feature extraction (12-D, unchanged) ─────────────────────
+  // ── Feature extraction ───────────────────────────────────────
+  /** Estimate normalized iris radius from its centre and boundary landmarks. */
   function _irisRadius(kp, center, ringIdx, vScale) {
     let s = 0;
     for (let i=0;i<ringIdx.length;i++) {
@@ -253,6 +168,7 @@ const EyeTracker = (() => {
     return (s/ringIdx.length)/vScale;
   }
 
+  /** Fill the output buffer with normalized iris and eye-position features. */
   function extractFeatures(kp, outBuf) {
     const vW = (videoEl && videoEl.videoWidth)  || 640;
     const vH = (videoEl && videoEl.videoHeight) || 480;
@@ -281,10 +197,7 @@ const EyeTracker = (() => {
     return outBuf;
   }
 
-  // v12's quality score summed raw landmark z values, which are signed and
-  // unbounded, so it collapsed to ~0 for perfectly good frames. This version
-  // scores what actually matters for a webcam gaze model: how much of the
-  // frame the face fills, and how frontal the head is.
+  /** Measure face position, size, pose, and overall frame quality. */
   function faceGeometry(kp) {
     const vW = (videoEl && videoEl.videoWidth)  || 640;
     const vH = (videoEl && videoEl.videoHeight) || 480;
@@ -313,6 +226,7 @@ const EyeTracker = (() => {
   }
 
   // ── Weighted ridge regression ────────────────────────────────
+  /** Fit weighted ridge-regression coefficients for one screen coordinate. */
   function fitRidge(samples, targetKey, lambda) {
     const n=samples.length, d=samples[0].features.length+1;
     const XtWX=Array.from({length:d},()=>new Float64Array(d));
@@ -325,6 +239,7 @@ const EyeTracker = (() => {
     return gaussElim(XtWX, XtWy, d);
   }
 
+  /** Solve a linear system using Gaussian elimination with pivoting. */
   function gaussElim(A, b, n) {
     const M=A.map((row,i)=>[...Array.from(row),b[i]]);
     for (let col=0;col<n;col++) {
@@ -337,12 +252,14 @@ const EyeTracker = (() => {
     return M.map((row,i)=>row[n]/(row[i]||1e-14));
   }
 
+  /** Predict a screen coordinate from fitted coefficients and gaze features. */
   function ridgePredict(coef, features) {
     let v=0;
     for (let i=0;i<12;i++) v+=coef[i]*features[i];
     return v+coef[12];
   }
 
+  /** Calculate the weighted root-mean-square calibration error. */
   function fitRms(samples) {
     let sse=0, wSum=0;
     for (const s of samples) {
@@ -353,6 +270,7 @@ const EyeTracker = (() => {
   }
 
   // ── Motion metrics ───────────────────────────────────────────
+  /** Update gaze velocity and determine whether the gaze is fixating. */
   function updateMotion(gx, gy, ts) {
     if (prevGaze && prevTime) {
       const dt=(ts-prevTime)/1000;
@@ -369,9 +287,8 @@ const EyeTracker = (() => {
     }
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // HOT PATH
-  // ══════════════════════════════════════════════════════════════
+  // ── Gaze processing ──────────────────────────────────────────
+  /** Convert detected landmarks into a filtered gaze sample and notify listeners. */
   function processGazeSample(kp, detectorDoneTs) {
     extractFeatures(kp, _featureBuf);
     const rawX = Math.max(0, Math.min(W(), ridgePredict(modelX, _featureBuf)));
@@ -424,6 +341,7 @@ const EyeTracker = (() => {
 
     if (ts - _hudLastUpdate >= CFG.HUD_UPDATE_MS) {
       _hudLastUpdate = ts;
+      /** Update a HUD element when it is present. */
       const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
       set('hx', _renderX.toFixed(0));
       set('hy', _renderY.toFixed(0));
@@ -446,12 +364,8 @@ const EyeTracker = (() => {
     _listenerMs = _listenerMs * (1 - LATENCY_ALPHA) + (performance.now() - listenerStart) * LATENCY_ALPHA;
   }
 
-  // ── Frame-freshness tracking (FIX FREQ-1) ─────────────────────
-  // An independent requestVideoFrameCallback chain used ONLY as a freshness
-  // signal. This is safe to run alongside the rAF detection loop because
-  // parkVideo() keeps the video in-layout at nonzero size/opacity, which is
-  // what makes rVFC fire reliably here (unlike the fully off-screen video
-  // that made v12's rVFC-driven DETECTION loop unreliable — see header notes).
+  // ── Frame freshness ──────────────────────────────────────────
+  /** Track newly presented video frames to gate redundant detector calls. */
   function startFrameFreshnessTracking() {
     if (_rvfcActive || !videoEl || typeof videoEl.requestVideoFrameCallback !== 'function') {
       if (!videoEl || typeof videoEl.requestVideoFrameCallback !== 'function') {
@@ -460,6 +374,7 @@ const EyeTracker = (() => {
       return;
     }
     _rvfcActive = true;
+    /** Count each newly presented frame and queue the next callback. */
     const onFrame = () => {
       _rvfcFrameCount++;
       if (_rvfcActive && videoEl) videoEl.requestVideoFrameCallback(onFrame);
@@ -467,11 +382,13 @@ const EyeTracker = (() => {
     videoEl.requestVideoFrameCallback(onFrame);
   }
 
+  /** Stop counting presented video frames. */
   function stopFrameFreshnessTracking() {
     _rvfcActive = false;
   }
 
-  // ── Frame loop (requestAnimationFrame driven) ────────────────
+  // ── Detection loop ───────────────────────────────────────────
+  /** Process a new camera frame and schedule the next animation-frame tick. */
   function frameTick() {
     if (!_running) return;
     _rafHandle = requestAnimationFrame(frameTick);
@@ -479,16 +396,7 @@ const EyeTracker = (() => {
     if (!detector || !videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0) return;
     if (_detectorBusy) { _droppedFrames++; return; }
 
-    // FIX FREQ-1: only run detection when the video has genuinely presented a
-    // new frame since the last processed tick. Without this gate, on a
-    // display refreshing faster than the negotiated camera frame rate,
-    // estimateFaces() re-runs on an unchanged frame — and because inference
-    // isn't perfectly deterministic, each re-run still emits a noisy,
-    // independent gaze sample rather than a duplicate, silently inflating the
-    // emitted rate above the true camera rate (observed 83-120Hz against a
-    // camera independently confirmed at ~58Hz). If requestVideoFrameCallback
-    // is unavailable, _rvfcActive stays false and this gate is a no-op so the
-    // tracker still functions, just without the correction.
+    // Skip this tick until the camera presents a frame not yet processed.
     if (_rvfcActive && _rvfcFrameCount === _lastProcessedFrameCount) return;
     _lastProcessedFrameCount = _rvfcFrameCount;
 
@@ -524,6 +432,7 @@ const EyeTracker = (() => {
       });
   }
 
+  /** Start detection, frame freshness tracking, and the stall watchdog. */
   function startLoop() {
     if (_running) return;
     _running = true;
@@ -534,6 +443,7 @@ const EyeTracker = (() => {
     tdiag('frame loop started', { mode: _mode });
   }
 
+  /** Stop detection, frame tracking, and the stall watchdog. */
   function stopLoop() {
     _running = false;
     stopFrameFreshnessTracking();
@@ -542,9 +452,7 @@ const EyeTracker = (() => {
     _detectorBusy = false;
   }
 
-  // A hung estimateFaces promise (WebGL context loss, tab throttling, a
-  // camera track that went "muted") used to silently end the session: the
-  // busy flag stayed true forever and no further frame was ever processed.
+  /** Recover the detection loop when frame processing stalls. */
   function watchdogTick() {
     if (!_running || document.hidden) return;
     const since = performance.now() - _lastFrameTs;
@@ -557,9 +465,8 @@ const EyeTracker = (() => {
     _rafHandle = requestAnimationFrame(frameTick);
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // CAMERA
-  // ══════════════════════════════════════════════════════════════
+  // ── Camera ───────────────────────────────────────────────────
+  /** Return available video input devices with labels and infrared hints. */
   async function enumerateCameras() {
     let devices = [];
     try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (_) { return []; }
@@ -572,6 +479,7 @@ const EyeTracker = (() => {
       }));
   }
 
+  /** Prefer the saved camera, then a non-infrared camera, if available. */
   async function pickDefaultCamera() {
     const saved = (() => { try { return localStorage.getItem(CAMERA_PREF_KEY); } catch (_) { return null; } })();
     const cams = await enumerateCameras();
@@ -580,6 +488,7 @@ const EyeTracker = (() => {
     return rgb ? rgb.deviceId : (cams[0] ? cams[0].deviceId : null);
   }
 
+  /** Open a camera stream using progressively broader video constraints. */
   async function openStream(deviceId) {
     let lastErr = null;
     for (const cs of CAMERA_CONSTRAINT_SETS) {
@@ -599,6 +508,7 @@ const EyeTracker = (() => {
     throw lastErr || new Error('No camera could be opened.');
   }
 
+  /** Store the active stream and update camera metadata. */
   function adoptStream(stream) {
     videoStream = stream;
     const tracks = stream.getVideoTracks();
@@ -613,6 +523,7 @@ const EyeTracker = (() => {
     }
   }
 
+  /** Replace the active camera stream with the selected device. */
   async function switchCamera(deviceId) {
     if (!videoEl) return false;
     const old = videoStream;
@@ -625,12 +536,9 @@ const EyeTracker = (() => {
     return true;
   }
 
+  /** Keep the video element available for decoding without showing a preview. */
   function parkVideo() {
     if (!videoEl) return;
-    // Kept in the layout (3x3 px, near-invisible) rather than at left:-9999px:
-    // browsers de-prioritise decoding for elements they consider off-screen.
-    // This is also what makes the independent rVFC freshness chain (FIX
-    // FREQ-1) fire reliably.
     videoEl.style.cssText =
       'position:fixed;left:2px;bottom:2px;width:3px;height:3px;opacity:0.02;' +
       'pointer-events:none;z-index:0;object-fit:cover;';
@@ -639,6 +547,7 @@ const EyeTracker = (() => {
   }
 
   // ── Startup ──────────────────────────────────────────────────
+  /** Initialize the camera, TensorFlow backend, and face-landmark detector. */
   async function ensureStarted() {
     if (_startPromise) return _startPromise;
     _startPromise = (async () => {
@@ -701,6 +610,7 @@ const EyeTracker = (() => {
     return _startPromise;
   }
 
+  /** Release detector, video, camera tracks, and loop resources. */
   function teardown() {
     stopLoop();
     if (detector && typeof detector.dispose === 'function') { try { detector.dispose(); } catch (_) {} }
@@ -712,9 +622,8 @@ const EyeTracker = (() => {
     _mode = 'idle';
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // PREVIEW (used by the camera-check screen)
-  // ══════════════════════════════════════════════════════════════
+  // ── Camera preview ───────────────────────────────────────────
+  /** Return current face-detection and camera preview statistics. */
   function previewStats() {
     const fresh = _lastKp && (performance.now() - _lastKpTs) < 400;
     return {
@@ -728,6 +637,7 @@ const EyeTracker = (() => {
     };
   }
 
+  /** Show the active camera inside a container and optionally report stats. */
   async function startPreview(container, onStats) {
     await ensureStarted();
     _previewCb = typeof onStats === 'function' ? onStats : null;
@@ -743,28 +653,22 @@ const EyeTracker = (() => {
     return previewStats();
   }
 
+  /** Hide the camera preview while keeping its stream active. */
   function stopPreview() {
     _previewCb = null;
     if (_mode === 'preview') _mode = 'idle';
     parkVideo();
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // CALIBRATION
-  // ══════════════════════════════════════════════════════════════
+  // ── Calibration ──────────────────────────────────────────────
   const CAL_BG = '#0b0d12';
   const CAL_Z  = 2147483000;   // above #cal-screen (2600), #cal-dot (1002), Plotly, modals
 
-  // The calibration surface is built and owned here, in one stacking context.
-  // The previous version reused the page's #cal-dot (z-index 1002 from
-  // styles.css) on top of #cal-screen (z-index 2600), so the target rendered
-  // BEHIND the backdrop: the participant saw a blank dark screen, stared at
-  // nothing for 20 points, and the fit came out at ~950 px error. Nothing here
-  // depends on styles.css any more.
+  // Calibration elements are created here to keep their layout independent of page styles.
   let calRoot = null, calTarget = null, calRing = null;
 
+  /** Create or display the calibration interface and its target elements. */
   function calUI() {
-    // Get the page's own calibration furniture out of the way entirely.
     const legacyScreen = $('cal-screen');
     if (legacyScreen) legacyScreen.style.display = 'none';
     const legacyDot = $('cal-dot');
@@ -811,22 +715,27 @@ const EyeTracker = (() => {
     return calRoot;
   }
 
+  /** Update the calibration hint shown below the target. */
   function calHint(text)   { const el = calRoot && calRoot.querySelector('#nt-cal-hint');  if (el) el.textContent = text; }
+  /** Update the calibration point counter. */
   function calCount(text)  { const el = calRoot && calRoot.querySelector('#nt-cal-count'); if (el) el.textContent = text; }
+  /** Set calibration progress as a fraction from zero to one. */
   function calBar(frac)    { const el = calRoot && calRoot.querySelector('#nt-cal-bar');   if (el) el.style.width = Math.round(frac*100) + '%'; }
+  /** Set the centered calibration message. */
   function calCenter(html) { const el = calRoot && calRoot.querySelector('#nt-cal-center'); if (el) el.innerHTML = html || ''; }
+  /** Hide the calibration interface. */
   function hideCalUI()     { if (calRoot) calRoot.style.display = 'none'; }
 
+  /** Move the calibration target to a screen coordinate. */
   function moveDot(x, y) {
     if (!calTarget) return;
     calTarget.style.opacity = '1';
     calTarget.style.transform = 'translate(' + Math.round(x) + 'px,' + Math.round(y) + 'px)';
   }
+  /** Hide the calibration target. */
   function hideDot() { if (calTarget) calTarget.style.opacity = '0'; }
 
-  // A contracting ring during the capture window: it tells the participant
-  // exactly when their gaze is being measured, which is what keeps the samples
-  // for a point tight instead of smeared across the travel.
+  /** Animate the target ring while samples are being captured. */
   function calPulse(on) {
     if (!calRing) return;
     if (on) {
@@ -842,6 +751,7 @@ const EyeTracker = (() => {
     }
   }
 
+  /** Show the brief countdown before calibration begins. */
   async function calCountdown() {
     for (const n of ['3', '2', '1']) {
       calCenter('<div style="font-size:64px;font-weight:300;color:#e8edf5;">' + n + '</div>');
@@ -851,6 +761,7 @@ const EyeTracker = (() => {
     calCenter('');
   }
 
+  /** Generate calibration targets arranged in a serpentine grid. */
   function buildGrid(cols, rows) {
     const padX = Math.max(64, W() * 0.06);
     const padY = Math.max(64, H() * 0.09);
@@ -868,6 +779,7 @@ const EyeTracker = (() => {
     return grid;
   }
 
+  /** Return screen positions reserved for calibration validation. */
   function validationPoints() {
     const mx = W()*0.25, Mx = W()*0.75, my = H()*0.25, My = H()*0.75;
     return [
@@ -877,6 +789,7 @@ const EyeTracker = (() => {
     ].slice(0, CFG.VALIDATION_PTS);
   }
 
+  /** Wait for a recent face detection that meets the quality threshold. */
   async function waitForFace(timeoutMs) {
     const end = performance.now() + timeoutMs;
     while (performance.now() < end) {
@@ -891,9 +804,7 @@ const EyeTracker = (() => {
     return false;
   }
 
-  // Pull samples from the loop's latest landmarks instead of issuing extra
-  // estimateFaces() calls: one inference pipeline, no contention, and every
-  // captured sample is a frame the tracker genuinely processed.
+  /** Return the median of a numeric array, or NaN when it is empty. */
   function medianOf(values) {
     const s = [...values].sort((a, b) => a - b);
     if (!s.length) return NaN;
@@ -901,10 +812,7 @@ const EyeTracker = (() => {
     return s.length % 2 ? s[m] : 0.5 * (s[m-1] + s[m]);
   }
 
-  // Drop samples that sit far from the point's own centre in feature space.
-  // A blink, a glance away, or a head shift inside the capture window produces
-  // exactly one or two wild samples, and with only ~10 samples per point those
-  // drag the ridge fit a long way.
+  /** Remove feature-space outliers from a calibration capture. */
   function rejectOutliers(raw) {
     if (raw.length < 5) return raw;
     const med = [];
@@ -921,6 +829,7 @@ const EyeTracker = (() => {
     return kept.length >= Math.max(3, Math.floor(raw.length * 0.5)) ? kept : raw;
   }
 
+  /** Capture quality-gated gaze samples while a calibration target is held. */
   async function captureAtPoint(pt, out, weightScale) {
     calPulse(true);
     const startGeom = _lastGeom;
@@ -933,9 +842,7 @@ const EyeTracker = (() => {
       const fresh = _lastKp && _lastKpTs !== lastTs && (performance.now() - _lastKpTs) < 250;
       if (fresh && _lastQuality >= CFG.QUALITY_MIN) {
         lastTs = _lastKpTs;
-        // Head-translation gate: the 12-D features are iris position relative
-        // to the eye corners plus absolute iris position, so a head shift
-        // mid-point injects a false gaze change.
+        // Exclude samples if the face position or scale changed during capture.
         if (startGeom && _lastGeom) {
           const dx = Math.abs(_lastGeom.cx - startGeom.cx);
           const dy = Math.abs(_lastGeom.cy - startGeom.cy);
@@ -956,11 +863,7 @@ const EyeTracker = (() => {
     return kept.length;
   }
 
-  // A blank screen, a participant not looking, or an unusable camera all
-  // produce the same signature: the eye features barely change from point to
-  // point, so the fit collapses toward predicting screen centre. Measuring
-  // that directly turns a mysterious "955 px" into a message that names the
-  // cause. Returns R^2 of per-point mean prediction against the true target.
+  /** Measure how consistently the fitted gaze follows calibration targets. */
   function fitAgreement(data) {
     const byPoint = new Map();
     for (const s of data) {
@@ -976,6 +879,7 @@ const EyeTracker = (() => {
       py: b.py.reduce((a, v) => a + v, 0) / b.py.length,
     }));
     if (pts.length < 4) return 1;
+    /** Compare predicted coordinates with their calibration targets. */
     const r2 = (actual, pred) => {
       const mean = actual.reduce((a, v) => a + v, 0) / actual.length;
       let ssRes = 0, ssTot = 0;
@@ -991,6 +895,7 @@ const EyeTracker = (() => {
     );
   }
 
+  /** Display calibration accuracy and let the participant retry or continue. */
   function showSummary(meanErrPx, samples, points) {
     let box = $('_nt_cal_summary');
     if (!box) {
@@ -1041,6 +946,7 @@ const EyeTracker = (() => {
     };
   }
 
+  /** Capture calibration data, fit gaze models, and validate their accuracy. */
   async function calibrate() {
     if (isCalibrating) return;
     try {
@@ -1135,8 +1041,7 @@ const EyeTracker = (() => {
           'Nothing was learned from this run, so it has been discarded rather than saved as a bad model.');
       }
 
-      // Held-out validation: the fit RMS always flatters itself, so measure
-      // against points the model was never trained on.
+      // Measure accuracy against target positions excluded from model fitting.
       calHint('Accuracy check — keep following the target.');
       const vPts = validationPoints();
       const errs = [];
@@ -1183,49 +1088,69 @@ const EyeTracker = (() => {
     }
   }
 
+  /** Show or hide the gaze cursor. */
   function setCursorVisible(visible) {
     const cursor = $('gaze-cursor');
     if (cursor) cursor.style.display = visible ? 'block' : 'none';
   }
 
-  // ══════════════════════════════════════════════════════════════
-  // PUBLIC API
-  // ══════════════════════════════════════════════════════════════
+  // ── Public API ───────────────────────────────────────────────
   const api = {
+    /** Register a callback for newly processed gaze samples. */
     onGaze(fn)  { if (typeof fn === 'function') _listeners.push(fn); },
+    /** Remove a previously registered gaze callback. */
     offGaze(fn) { _listeners = _listeners.filter(l => l !== fn); },
+    /** Return a copy of the most recent gaze sample. */
     getGaze()   { return { ..._latestGaze }; },
 
+    /** Report whether a calibration model is available. */
     isCalibrated()        { return _calibrated; },
+    /** Return the latest calibration error in pixels. */
     getCalibrationError() { return _calError || 0; },
+    /** Return the held-out validation error in pixels. */
     getValidationError()  { return _validationError; },
+    /** Return the measured gaze-processing frame rate. */
     getFPS()              { return _fps; },
+    /** Return the measured gaze-processing frame rate. */
     getProcessingFPS()    { return _fps; },
+    /** Return the camera's configured frame rate. */
     getCameraFPS()        { return _cameraFps; },
+    /** Return the frame rate requested when opening the camera. */
     getRequestedFPS()     { return _requestedFps; },
+    /** Return the camera's reported frame rate. */
     getActualFPS()        { return _actualFps; },
+    /** Return the active camera resolution. */
     getCameraResolution() { return _cameraResolution; },
+    /** Return the number of frames skipped while detection was busy. */
     getDroppedFrames()    { return _droppedFrames; },
+    /** Return the total number of completed detector frames. */
     getTotalFrames()      { return _totalFrames; },
+    /** Return the number of frames used to produce gaze samples. */
     getProcessedFrames()  { return _processedFrames; },
+    /** Return the total number of emitted gaze samples. */
     getEmittedSamples()   { return _emittedSamples; },
+    /** Return the smoothed detector inference time in milliseconds. */
     getDetectorMs()       { return _detectorMs; },
+    /** Return the smoothed gaze-processing time in milliseconds. */
     getProcessMs()        { return _processMs; },
+    /** Return the smoothed listener-callback time in milliseconds. */
     getListenerMs()       { return _listenerMs; },
+    /** Return the blink count; blink detection is not currently implemented. */
     getBlinkCount()       { return 0; },
-    // FIX FREQ-1 diagnostics: compare against emittedSamples/processedFrames
-    // to confirm the gate is working (they should now track closely).
+    /** Return the count of newly presented camera frames. */
     getTrueFrameCount()    { return _rvfcFrameCount; },
+    /** Report whether camera-frame freshness gating is active. */
     isFrameGateActive()    { return _rvfcActive; },
 
-    // The single most useful guard for the "every task recorded zero rows"
-    // failure: ask before starting a task instead of finding out at the end.
+    /** Report whether gaze samples have been emitted recently. */
     isEmitting() {
       return _mode === 'tracking' && _calibrated && !_paused &&
              (performance.now() - _lastEmitTs) < 1500;
     },
+    /** Report whether a face was detected recently. */
     isFaceVisible() { return !!_lastKp && (performance.now() - _lastKpTs) < 600; },
 
+    /** Return current camera, processing, calibration, and emission metrics. */
     getPerformanceStats() {
       return {
         mode: _mode,
@@ -1248,32 +1173,43 @@ const EyeTracker = (() => {
         validationErrorPx: _validationError,
         emitting: api.isEmitting(),
         lastEmitAgoMs: _lastEmitTs ? Math.round(performance.now() - _lastEmitTs) : null,
-        // FIX FREQ-1: true camera-frame count from the independent rVFC
-        // chain, and whether the freshness gate is active. If frameGateActive
-        // is true, emittedSamples should now track trueFrameCount closely
-        // (within normal camera-rate variance) instead of exceeding it.
+        // Include camera-frame freshness data alongside emitted sample counts.
         trueFrameCount: _rvfcFrameCount,
         frameGateActive: _rvfcActive,
       };
     },
 
-    // preview / camera management
+    // Preview and camera management.
+    /** Initialize the tracker and return its active video element. */
     start: ensureStarted,
+    /** Show the camera preview and report optional live statistics. */
     startPreview,
+    /** Hide the preview while retaining the active camera stream. */
     stopPreview,
+    /** List available cameras and flag likely infrared devices. */
     listCameras: enumerateCameras,
+    /** Switch the active stream to a selected camera. */
     switchCamera,
+    /** Return the active camera video element. */
     getVideoElement() { return videoEl; },
+    /** Show or hide the gaze cursor. */
     setCursorVisible,
 
+    /** Pause gaze sample processing without stopping camera detection. */
     pause()  { _paused = true; },
+    /** Resume gaze sample processing after a pause. */
     resume() { _paused = false; },
 
+    /** Run the calibration sequence and accuracy check. */
     calibrate,
+    /** Run calibration again. */
     recalibrate: calibrate,
+    /** Start calibration directly without an intermediate screen. */
     startDirectCalibration: calibrate,
+    /** Request cancellation of the active calibration sequence. */
     abortCalibration() { _calAborted = true; },
 
+    /** Stop tracking and release all camera and detector resources. */
     stop() {
       _listeners = [];
       _calibrated = false;
@@ -1289,11 +1225,12 @@ const EyeTracker = (() => {
   return api;
 })();
 
-// Deferred start hook kept for backwards compatibility with battery-controller.js
+/** Start the tracker through the legacy battery-controller hook. */
 window._startEyeTrackerNow = function () {
   return EyeTracker.start();
 };
 
 if (typeof window.sleep !== 'function') {
+  /** Provide a shared delay helper when the page does not define one. */
   window.sleep = function (ms) { return new Promise(r => setTimeout(r, ms)); };
 }
