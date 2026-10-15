@@ -1,8 +1,31 @@
 /**
- * EyeTracker — NeurOcular Engine  v13.0
+ * EyeTracker — NeurOcular Engine  v13.1
  * ════════════════════════════════════════════════════════════════
  *
- *  WHAT CHANGED VS v12 (and why)
+ *  WHAT CHANGED IN v13.1 (FIX FREQ-1)
+ *  ─────────────────────────────────
+ *  v13's frame loop ran detector.estimateFaces() on every requestAnimationFrame
+ *  tick, with no check that the <video> element had actually presented a new
+ *  camera frame since the last tick. On a display refreshing faster than the
+ *  negotiated camera frame rate (confirmed via track.getSettings().frameRate
+ *  and independently via requestVideoFrameCallback — see validation notes),
+ *  this silently re-ran MediaPipe on an unchanged frame. Because WebGL/MediaPipe
+ *  inference is not perfectly deterministic, each such re-run still produced a
+ *  measurably different (noisy) gaze sample rather than an identical one —
+ *  inflating the emitted sample rate well above the true camera delivery rate
+ *  (observed: 83–120 emitted "Hz" against a camera independently confirmed at
+ *  ~58Hz) while injecting non-physiological jitter into the recorded signal.
+ *
+ *  Fix: a lightweight, independent requestVideoFrameCallback chain
+ *  (startFrameFreshnessTracking / stopFrameFreshnessTracking) increments a
+ *  frame counter exactly once per genuinely new presented frame. frameTick()
+ *  now gates the detector call on that counter having advanced since the last
+ *  processed tick — verified in simulation to converge the detector-call rate
+ *  to the true camera frame rate regardless of display refresh rate. This does
+ *  not replace the rAF-driven loop or its watchdog/stall-recovery behavior
+ *  (see v13 notes below) — it only gates whether a given rAF tick does work.
+ *
+ *  WHAT CHANGED VS v12 (and why) — unchanged from v13, kept for reference
  *  ─────────────────────────────
  *  1. ONE CAMERA, ONE PREVIEW, ONE DETECTOR.
  *     v12 opened a getUserMedia stream in BatteryController.start() for the
@@ -14,7 +37,7 @@
  *     startPreview(), so what the operator sees is literally what the
  *     tracker sees, and nothing is opened a second time.
  *
- *  2. FRAME LOOP IS rAF-DRIVEN, NOT rVFC-DRIVEN.
+ *  2. FRAME LOOP IS rAF-DRIVEN, NOT rVFC-DRIVEN (for the DETECTION loop).
  *     v12 drove inference from requestVideoFrameCallback on a video parked
  *     at left:-9999px. Chromium throttles (and in some states stops) rVFC
  *     for videos it considers non-rendered, and the element was also moved
@@ -23,7 +46,12 @@
  *     and every task recorded zero rows -> "FV:0 SPEM:0 SZ:0". The loop is
  *     now plain requestAnimationFrame (60 Hz >> the 33-50 FPS MediaPipe
  *     ceiling, so nothing is lost) with a 2 s stall watchdog that clears a
- *     stuck _detectorBusy flag and restarts the loop.
+ *     stuck _detectorBusy flag and restarts the loop. v13.1 adds a SEPARATE,
+ *     independent rVFC chain purely as a frame-freshness signal (see FIX
+ *     FREQ-1 above) — this is safe because parkVideo() already keeps the
+ *     video in-layout at nonzero size/opacity, which is what makes rVFC
+ *     fire reliably here (confirmed empirically), unlike the fully
+ *     off-screen video that caused v12's problem.
  *
  *  3. CAMERA SELECTION NO LONGER PREFERS IR CAMERAS.
  *     v12 scored device labels with `label.includes('ir')`, which matches
@@ -139,6 +167,14 @@ const EyeTracker = (() => {
   let _rafHandle = null;
   let _watchdog = null;
   let _detectorBusy = false;
+
+  // FIX FREQ-1: independent frame-freshness signal, decoupled from the rAF
+  // detection loop below. _rvfcFrameCount increments once per genuinely new
+  // presented video frame (confirmed empirically to track the true camera
+  // delivery rate on this hardware/browser combination, unlike rAF which
+  // tracks display refresh). frameTick() compares against
+  // _lastProcessedFrameCount to decide whether this tick has new data.
+  let _rvfcFrameCount = 0, _lastProcessedFrameCount = -1, _rvfcActive = false;
 
   let _lastKp = null, _lastKpTs = 0, _lastQuality = 0, _lastGeom = null;
   let _lastFrameTs = 0, _lastEmitTs = 0;
@@ -410,6 +446,31 @@ const EyeTracker = (() => {
     _listenerMs = _listenerMs * (1 - LATENCY_ALPHA) + (performance.now() - listenerStart) * LATENCY_ALPHA;
   }
 
+  // ── Frame-freshness tracking (FIX FREQ-1) ─────────────────────
+  // An independent requestVideoFrameCallback chain used ONLY as a freshness
+  // signal. This is safe to run alongside the rAF detection loop because
+  // parkVideo() keeps the video in-layout at nonzero size/opacity, which is
+  // what makes rVFC fire reliably here (unlike the fully off-screen video
+  // that made v12's rVFC-driven DETECTION loop unreliable — see header notes).
+  function startFrameFreshnessTracking() {
+    if (_rvfcActive || !videoEl || typeof videoEl.requestVideoFrameCallback !== 'function') {
+      if (!videoEl || typeof videoEl.requestVideoFrameCallback !== 'function') {
+        tdiag('requestVideoFrameCallback unavailable — frame-freshness gate disabled, falling back to ungated rAF detection');
+      }
+      return;
+    }
+    _rvfcActive = true;
+    const onFrame = () => {
+      _rvfcFrameCount++;
+      if (_rvfcActive && videoEl) videoEl.requestVideoFrameCallback(onFrame);
+    };
+    videoEl.requestVideoFrameCallback(onFrame);
+  }
+
+  function stopFrameFreshnessTracking() {
+    _rvfcActive = false;
+  }
+
   // ── Frame loop (requestAnimationFrame driven) ────────────────
   function frameTick() {
     if (!_running) return;
@@ -417,6 +478,19 @@ const EyeTracker = (() => {
 
     if (!detector || !videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0) return;
     if (_detectorBusy) { _droppedFrames++; return; }
+
+    // FIX FREQ-1: only run detection when the video has genuinely presented a
+    // new frame since the last processed tick. Without this gate, on a
+    // display refreshing faster than the negotiated camera frame rate,
+    // estimateFaces() re-runs on an unchanged frame — and because inference
+    // isn't perfectly deterministic, each re-run still emits a noisy,
+    // independent gaze sample rather than a duplicate, silently inflating the
+    // emitted rate above the true camera rate (observed 83-120Hz against a
+    // camera independently confirmed at ~58Hz). If requestVideoFrameCallback
+    // is unavailable, _rvfcActive stays false and this gate is a no-op so the
+    // tracker still functions, just without the correction.
+    if (_rvfcActive && _rvfcFrameCount === _lastProcessedFrameCount) return;
+    _lastProcessedFrameCount = _rvfcFrameCount;
 
     _detectorBusy = true;
     const t0 = performance.now();
@@ -454,6 +528,7 @@ const EyeTracker = (() => {
     if (_running) return;
     _running = true;
     _lastFrameTs = performance.now();
+    startFrameFreshnessTracking();
     _rafHandle = requestAnimationFrame(frameTick);
     if (!_watchdog) _watchdog = setInterval(watchdogTick, 1000);
     tdiag('frame loop started', { mode: _mode });
@@ -461,6 +536,7 @@ const EyeTracker = (() => {
 
   function stopLoop() {
     _running = false;
+    stopFrameFreshnessTracking();
     if (_rafHandle != null) { try { cancelAnimationFrame(_rafHandle); } catch (_) {} _rafHandle = null; }
     if (_watchdog) { clearInterval(_watchdog); _watchdog = null; }
     _detectorBusy = false;
@@ -553,6 +629,8 @@ const EyeTracker = (() => {
     if (!videoEl) return;
     // Kept in the layout (3x3 px, near-invisible) rather than at left:-9999px:
     // browsers de-prioritise decoding for elements they consider off-screen.
+    // This is also what makes the independent rVFC freshness chain (FIX
+    // FREQ-1) fire reliably.
     videoEl.style.cssText =
       'position:fixed;left:2px;bottom:2px;width:3px;height:3px;opacity:0.02;' +
       'pointer-events:none;z-index:0;object-fit:cover;';
@@ -1080,7 +1158,7 @@ const EyeTracker = (() => {
       _calError = Number.isFinite(_validationError) ? _validationError : _calError;
 
       const he = $('he'); if (he) he.textContent = _calError.toFixed(1) + ' px';
-      console.log('[EyeTracker v13] calibration: ' + data.length + ' samples / ' + points.length +
+      console.log('[EyeTracker v13.1] calibration: ' + data.length + ' samples / ' + points.length +
                   ' points, validation error ' + _calError.toFixed(1) + ' px');
 
       isCalibrating = false;
@@ -1095,7 +1173,7 @@ const EyeTracker = (() => {
       modelX = null; modelY = null;
       hideDot();
       hideCalUI();
-      console.error('[EyeTracker v13] calibration error:', err);
+      console.error('[EyeTracker v13.1] calibration error:', err);
       if (typeof window.reportClientError === 'function') window.reportClientError('calibration', err);
       const retry = confirm(err.message + '\n\nTry calibrating again?');
       if (retry) { setTimeout(calibrate, 200); }
@@ -1135,6 +1213,10 @@ const EyeTracker = (() => {
     getProcessMs()        { return _processMs; },
     getListenerMs()       { return _listenerMs; },
     getBlinkCount()       { return 0; },
+    // FIX FREQ-1 diagnostics: compare against emittedSamples/processedFrames
+    // to confirm the gate is working (they should now track closely).
+    getTrueFrameCount()    { return _rvfcFrameCount; },
+    isFrameGateActive()    { return _rvfcActive; },
 
     // The single most useful guard for the "every task recorded zero rows"
     // failure: ask before starting a task instead of finding out at the end.
@@ -1166,6 +1248,12 @@ const EyeTracker = (() => {
         validationErrorPx: _validationError,
         emitting: api.isEmitting(),
         lastEmitAgoMs: _lastEmitTs ? Math.round(performance.now() - _lastEmitTs) : null,
+        // FIX FREQ-1: true camera-frame count from the independent rVFC
+        // chain, and whether the freshness gate is active. If frameGateActive
+        // is true, emittedSamples should now track trueFrameCount closely
+        // (within normal camera-rate variance) instead of exceeding it.
+        trueFrameCount: _rvfcFrameCount,
+        frameGateActive: _rvfcActive,
       };
     },
 
