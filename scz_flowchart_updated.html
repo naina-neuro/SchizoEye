@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SCZ Diagnostic Model — Flowchart</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fdf6ec;
+    --surface: #fff8f0;
+    --card: #ffffff;
+    --border: #e8d9c5;
+    --c1: #e07b39;   /* warm orange – free viewing */
+    --c2: #5b8dd9;   /* cornflower blue – smooth pursuit */
+    --c3: #3aab6e;   /* fresh green – fixation */
+    --c4: #c0504a;   /* warm red – antisaccade */
+    --c5: #8b5db8;   /* soft purple – ML model */
+    --c6: #d4822a;   /* amber – output */
+    --text: #2c1f0e;
+    --muted: #a08060;
+    --mono: 'Lato', sans-serif;
+    --sans: 'Nunito', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    font-family: var(--sans);
+    color: var(--text);
+    padding: 48px 20px 72px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: radial-gradient(circle, rgba(180,120,60,0.07) 1px, transparent 1px);
+    background-size: 30px 30px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .page {
+    max-width: 1060px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── HEADER ── */
+  header {
+    text-align: center;
+    margin-bottom: 60px;
+    animation: up .6s ease both;
+  }
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #fff;
+    background: var(--c1);
+    border-radius: 20px;
+    padding: 6px 18px;
+    margin-bottom: 18px;
+    box-shadow: 0 3px 12px rgba(224,123,57,0.35);
+  }
+  header h1 {
+    font-size: clamp(22px, 3.5vw, 36px);
+    font-weight: 900;
+    line-height: 1.25;
+    color: #2c1f0e;
+    margin-bottom: 10px;
+  }
+  header h1 span {
+    color: var(--c1);
+  }
+  header p {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  /* ── FLOW ── */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ── SECTION PILL ── */
+  .pill {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 20px;
+    border-radius: 20px;
+    border: 2px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-weight: 700;
+    animation: up .45s ease both;
+    margin: 4px 0;
+    box-shadow: 0 2px 8px rgba(160,128,96,0.1);
+  }
+
+  /* ── ARROW ── */
+  .arr {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4px 0;
+  }
+  .arr .ln {
+    width: 2px;
+    height: 26px;
+    background: linear-gradient(to bottom, transparent, #c8a882);
+  }
+  .arr .hd {
+    width: 0; height: 0;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-top: 10px solid #c8a882;
+  }
+  .arr.label { padding: 2px 0; }
+  .arr.label .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: #fff;
+    background: var(--c1);
+    border-radius: 5px;
+    padding: 4px 14px;
+    margin: 4px 0;
+    font-weight: 700;
+    box-shadow: 0 2px 8px rgba(224,123,57,0.3);
+  }
+
+  /* ── NODE ── */
+  .node {
+    width: 100%;
+    max-width: 820px;
+    background: var(--card);
+    border: 2px solid var(--border);
+    border-radius: 16px;
+    padding: 24px 30px;
+    position: relative;
+    animation: up .5s ease both;
+    transition: box-shadow .2s, transform .2s;
+    box-shadow: 0 4px 16px rgba(160,128,96,0.1);
+  }
+  .node:hover {
+    box-shadow: 0 8px 28px rgba(160,128,96,0.18);
+    transform: translateY(-2px);
+  }
+
+  .node .eyebrow {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+    font-weight: 700;
+  }
+  .node h2 {
+    font-size: 15.5px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .node h2 .ico {
+    width: 34px; height: 34px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px;
+    flex-shrink: 0;
+  }
+  .node p { font-size: 13.5px; color: #6b5038; line-height: 1.75; }
+  .node .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    background: #fdf0e3;
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    color: #7a5530;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+
+  /* colour themes */
+  .warm  { border-color: #f4c08a; background: #fffaf4; }
+  .warm  h2 { color: var(--c1); }
+  .warm  .ico { background: #fde8cc; color: var(--c1); }
+  .warm  .chip { border-color: #f4c08a; background: #fff5e6; }
+
+  .blue { border-color: #a8c4ef; background: #f4f8ff; }
+  .blue h2 { color: var(--c2); }
+  .blue .ico { background: #dae8fb; color: var(--c2); }
+  .blue .chip { border-color: #a8c4ef; background: #eaf2ff; }
+
+  .green { border-color: #90d9b0; background: #f3fdf7; }
+  .green h2 { color: var(--c3); }
+  .green .ico { background: #c8f0db; color: var(--c3); }
+  .green .chip { border-color: #90d9b0; background: #e8f9f0; }
+
+  .red { border-color: #e8a8a5; background: #fdf5f5; }
+  .red h2 { color: var(--c4); }
+  .red .ico { background: #f8d8d6; color: var(--c4); }
+  .red .chip { border-color: #e8a8a5; background: #fdeeed; }
+
+  .purple { border-color: #c8a8e8; background: #faf5ff; }
+  .purple h2 { color: var(--c5); }
+  .purple .ico { background: #e8d5f8; color: var(--c5); }
+  .purple .chip { border-color: #c8a8e8; background: #f3ecfc; }
+
+  .amber { border-color: #f0c870; background: #fffbf0; }
+  .amber h2 { color: var(--c6); }
+  .amber .ico { background: #fdefc4; color: var(--c6); }
+  .amber .chip { border-color: #f0c870; background: #fff8e0; }
+
+  .neutral { border-color: var(--border); background: var(--card); }
+  .neutral h2 { color: #4a3520; }
+  .neutral .ico { background: #f5ebe0; color: #7a5530; }
+
+  /* ── SPLIT ── */
+  .split {
+    display: flex;
+    gap: 16px;
+    width: 100%;
+    max-width: 820px;
+    animation: up .5s ease both;
+  }
+  .split .node { flex: 1; max-width: none; }
+
+  /* ── QUAD GRID ── */
+  .quad {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    width: 100%;
+    max-width: 820px;
+    animation: up .5s ease both;
+  }
+  .quad .node { max-width: none; }
+
+  /* feature counts */
+  .feat-count {
+    display: inline-block;
+    font-family: var(--sans);
+    font-size: 30px;
+    font-weight: 900;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .feat-label {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  /* ── FUSION BANNER ── */
+  .fusion {
+    width: 100%;
+    max-width: 820px;
+    border: 2px dashed #c8a8e8;
+    border-radius: 16px;
+    padding: 22px 30px;
+    background: #faf5ff;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    animation: up .5s ease both;
+    box-shadow: 0 4px 16px rgba(139,93,184,0.08);
+  }
+  .fusion .icon-big { font-size: 36px; flex-shrink: 0; }
+  .fusion h3 { font-size: 15px; font-weight: 800; color: var(--c5); margin-bottom: 8px; }
+  .fusion p { font-size: 13px; color: #6b5080; line-height: 1.7; }
+
+  /* ── PROBABILITY SCORE BOX ── */
+  .prob-box {
+    width: 100%;
+    max-width: 820px;
+    background: linear-gradient(135deg, #fff8f0, #f0f8ff);
+    border: 2px solid #e0c8a0;
+    border-radius: 16px;
+    padding: 28px 32px;
+    animation: up .5s ease both;
+    box-shadow: 0 6px 24px rgba(160,128,96,0.12);
+  }
+  .prob-box h3 {
+    font-size: 15px;
+    font-weight: 800;
+    color: #4a3520;
+    margin-bottom: 20px;
+  }
+  /* split-bar rows */
+  .prob-row {
+    margin-bottom: 20px;
+  }
+  .prob-row-label {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .prob-subject {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: #4a3520;
+    letter-spacing: 1px;
+    min-width: 72px;
+  }
+  .prob-tag {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 3px 12px;
+    border-radius: 20px;
+    border: 1.5px solid;
+  }
+  .prob-split-bar {
+    display: flex;
+    height: 38px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1.5px solid #d8c8b0;
+    box-shadow: 0 2px 8px rgba(160,128,96,0.1);
+  }
+  .psb-scz {
+    background: linear-gradient(90deg, #e8756e, #c0504a);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: width .8s ease;
+    min-width: 50px;
+  }
+  .psb-hc {
+    background: linear-gradient(90deg, #5cc98a, #3aab6e);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: width .8s ease;
+    min-width: 40px;
+  }
+  .psb-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: .5px;
+    white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  }
+  .prob-row-note {
+    font-size: 12px;
+    color: #8a6848;
+    line-height: 1.6;
+    margin-top: 7px;
+    padding-left: 4px;
+  }
+  .prob-note {
+    font-size: 12.5px;
+    color: #8a6848;
+    line-height: 1.7;
+    margin-top: 16px;
+    border-top: 1.5px solid var(--border);
+    padding-top: 14px;
+  }
+
+  /* ── METRICS ROW ── */
+  .metrics {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    max-width: 820px;
+    flex-wrap: wrap;
+    justify-content: center;
+    animation: up .5s ease both;
+  }
+  .mc {
+    flex: 1;
+    min-width: 90px;
+    background: var(--card);
+    border: 2px solid #d0c0a8;
+    border-radius: 12px;
+    padding: 18px 12px;
+    text-align: center;
+    transition: transform .2s, box-shadow .2s;
+    box-shadow: 0 3px 10px rgba(160,128,96,0.1);
+  }
+  .mc:hover { transform: translateY(-4px); box-shadow: 0 10px 28px rgba(160,128,96,0.18); }
+  .mc .val {
+    font-family: var(--sans);
+    font-size: 20px;
+    font-weight: 900;
+    color: var(--c1);
+    line-height: 1;
+    margin-bottom: 7px;
+  }
+  .mc .lbl {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+
+  /* ── OUTPUT BOX ── */
+  .output {
+    width: 100%;
+    max-width: 820px;
+    background: linear-gradient(135deg, #fffbf0, #f5fff8);
+    border: 2px solid #d4b870;
+    border-radius: 16px;
+    padding: 28px 32px;
+    animation: up .5s ease both;
+    box-shadow: 0 6px 24px rgba(212,184,112,0.15);
+  }
+  .output h2 { font-size: 16px; font-weight: 900; color: var(--c6); margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
+  .output .rows { display: flex; flex-direction: column; gap: 12px; }
+  .out-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    font-size: 13.5px;
+    color: #6b5038;
+    line-height: 1.7;
+    background: rgba(255,255,255,0.7);
+    border-radius: 10px;
+    padding: 12px 16px;
+    border: 1.5px solid rgba(212,184,112,0.3);
+  }
+  .out-row .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 6px;
+  }
+
+  /* ── WHY BOX ── */
+  .why {
+    width: 100%;
+    max-width: 820px;
+    border: 2px solid var(--border);
+    border-radius: 16px;
+    padding: 24px 30px;
+    background: var(--surface);
+    animation: up .5s ease both;
+    box-shadow: 0 4px 16px rgba(160,128,96,0.08);
+  }
+  .why h3 { font-size: 14px; font-weight: 800; color: #4a3520; margin-bottom: 14px; letter-spacing: .3px; }
+  .why-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .why-card {
+    background: var(--card);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    box-shadow: 0 2px 8px rgba(160,128,96,0.08);
+  }
+  .why-card .wc-icon { font-size: 22px; margin-bottom: 10px; }
+  .why-card .wc-title { font-size: 12px; font-weight: 800; margin-bottom: 6px; }
+  .why-card .wc-desc { font-size: 11.5px; color: #8a6848; line-height: 1.6; }
+
+  /* ── LEGEND ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+    margin-top: 48px;
+    animation: up .5s ease both;
+  }
+  .li {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    font-weight: 700;
+  }
+  .li .sw { width: 12px; height: 12px; border-radius: 4px; }
+
+  @keyframes up {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* stagger */
+  .flow > *:nth-child(1)  { animation-delay: .04s; }
+  .flow > *:nth-child(2)  { animation-delay: .08s; }
+  .flow > *:nth-child(3)  { animation-delay: .12s; }
+  .flow > *:nth-child(4)  { animation-delay: .16s; }
+  .flow > *:nth-child(5)  { animation-delay: .20s; }
+  .flow > *:nth-child(6)  { animation-delay: .24s; }
+  .flow > *:nth-child(7)  { animation-delay: .28s; }
+  .flow > *:nth-child(8)  { animation-delay: .32s; }
+  .flow > *:nth-child(9)  { animation-delay: .36s; }
+  .flow > *:nth-child(10) { animation-delay: .40s; }
+  .flow > *:nth-child(11) { animation-delay: .44s; }
+  .flow > *:nth-child(12) { animation-delay: .48s; }
+  .flow > *:nth-child(13) { animation-delay: .52s; }
+  .flow > *:nth-child(14) { animation-delay: .56s; }
+  .flow > *:nth-child(15) { animation-delay: .60s; }
+  .flow > *:nth-child(16) { animation-delay: .64s; }
+  .flow > *:nth-child(17) { animation-delay: .68s; }
+  .flow > *:nth-child(18) { animation-delay: .72s; }
+  .flow > *:nth-child(19) { animation-delay: .76s; }
+  .flow > *:nth-child(20) { animation-delay: .80s; }
+  .flow > *:nth-child(21) { animation-delay: .84s; }
+  .flow > *:nth-child(22) { animation-delay: .88s; }
+  .flow > *:nth-child(23) { animation-delay: .92s; }
+  .flow > *:nth-child(24) { animation-delay: .96s; }
+  .flow > *:nth-child(25) { animation-delay:1.00s; }
+
+  @media (max-width: 580px) {
+    .quad { grid-template-columns: 1fr; }
+    .split { flex-direction: column; }
+    .why-grid { grid-template-columns: 1fr; }
+    .prob-gauge-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="badge">Multi-Task Early Fusion Architecture</div>
+    <h1>SCZ Diagnostic Predictive Model<br>Using <span>Eye-Tracking Biomarkers</span></h1>
+    <p>4 Tasks · 59 Features · GBDT / XGBoost · Early Fusion Pipeline</p>
+  </header>
+
+  <div class="flow">
+
+    <!-- ═══ STEP 1 ═══ -->
+    <div class="pill">Step 1 · Data Collection</div>
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <!-- Participants -->
+    <div class="node neutral">
+      <div class="eyebrow">Step 1.0 · Participants</div>
+      <h2><span class="ico">👥</span>Human Subjects</h2>
+      <p>Recruit two groups with no overlap. Standardise age, sex, and education where possible. All participants complete the same four eye-tracking tasks in a single session.</p>
+      <div class="chips">
+        <span class="chip">Group A · Schizophrenia patients (SCZ)</span>
+        <span class="chip">Group B · Healthy Controls (HC)</span>
+        <span class="chip">Matched: age · sex · education</span>
+        <span class="chip">Exclusions: neurological illness · diabetes · head injury</span>
+      </div>
+    </div>
+
+    <div class="arr label">
+      <div class="ln"></div>
+      <div class="tag">4 EYE-TRACKING TASKS</div>
+      <div class="hd"></div>
+    </div>
+
+    <!-- 4 tasks grid -->
+    <div class="quad">
+
+      <div class="node warm">
+        <div class="eyebrow">Task 1 · Free-Viewing</div>
+        <h2><span class="ico">🖼️</span>Free-Viewing</h2>
+        <p>Subject freely scans 42 images (faces, landscapes, animals, environments) for 8 sec each. No instructions about where to look. Captures natural visual exploration patterns.</p>
+        <div class="chips">
+          <span class="chip">42 images · 8 sec each</span>
+          <span class="chip">Faces · Landscapes · Animals</span>
+          <span class="chip">No gaze instruction</span>
+        </div>
+      </div>
+
+      <div class="node blue">
+        <div class="eyebrow">Task 2 · Smooth Pursuit</div>
+        <h2><span class="ico">↔️</span>Smooth Pursuit</h2>
+        <p>Subject tracks a moving 0.5° dot across the screen. Three subtasks at varying frequencies. Tests sensorimotor coordination and motion perception.</p>
+        <div class="chips">
+          <span class="chip">HS4 · horizontal · 0.4 Hz</span>
+          <span class="chip">LS2 · Lissajous · 0.2 Hz</span>
+          <span class="chip">LS4 · Lissajous · 0.4 Hz</span>
+          <span class="chip">20 sec per trial</span>
+        </div>
+      </div>
+
+      <div class="node green">
+        <div class="eyebrow">Task 3 · Fixation Stability</div>
+        <h2><span class="ico">⊕</span>Fixation Stability</h2>
+        <p>Subject holds gaze on a central stationary dot; a distracting target appears on the periphery. Tests saccadic inhibition and sustained attention under competition.</p>
+        <div class="chips">
+          <span class="chip">Single target condition</span>
+          <span class="chip">Distracter at 1.43° or 2.86°</span>
+          <span class="chip">Each trial × 2 repetitions</span>
+        </div>
+      </div>
+
+      <div class="node red" style="border: 3px solid #a03030; box-shadow: 0 0 0 4px rgba(192,80,74,0.3), 0 8px 28px rgba(192,80,74,0.3); position:relative;">
+        <div style="position:absolute; top:-13px; left:16px; background:#c0504a; color:#fff; font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:2px; padding:3px 12px; border-radius:20px; text-transform:uppercase; box-shadow:0 2px 8px rgba(192,80,74,0.4);">★ New Addition</div>
+        <div class="eyebrow" style="margin-top:4px;">Task 4 · Antisaccade (New)</div>
+        <h2><span class="ico">🔀</span>Antisaccade</h2>
+        <p>A stimulus flashes at the screen edge; subject must suppress the reflexive look and instead move gaze to the mirror-opposite location. Directly probes prefrontal inhibitory control — a hallmark SCZ deficit.</p>
+        <div class="chips">
+          <span class="chip">Peripheral stimulus onset</span>
+          <span class="chip">Voluntary gaze suppression</span>
+          <span class="chip">Prefrontal cortex (DLPFC) probe</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ═══ STEP 2 ═══ -->
+    <div class="arr label">
+      <div class="ln"></div>
+      <div class="tag">Step 2 · Feature Extraction</div>
+      <div class="hd"></div>
+    </div>
+
+    <div class="pill">Step 2 · Extracting 59 Features</div>
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <!-- feature extraction cards -->
+    <div class="quad">
+
+      <div class="node warm">
+        <div class="eyebrow">Free-Viewing · 9 Features</div>
+        <h2><span class="ico">📐</span>Exploration Metrics</h2>
+        <div class="chips">
+          <span class="chip">Fixation count</span>
+          <span class="chip">Fixation duration</span>
+          <span class="chip">Saccade count</span>
+          <span class="chip">Saccade amplitude</span>
+          <span class="chip">Saccade velocity</span>
+          <span class="chip">Scan path length ★</span>
+          <span class="chip">Fixation dispersion ★</span>
+          <span class="chip">Saccade peak velocity</span>
+          <span class="chip">Saccade duration</span>
+        </div>
+        <p style="margin-top:10px; font-size:11.5px; color:#b07040;">★ Top-2 discriminators from prior study</p>
+      </div>
+
+      <div class="node blue">
+        <div class="eyebrow">Smooth Pursuit · 36 Features</div>
+        <h2><span class="ico">📡</span>Tracking Metrics</h2>
+        <div class="chips">
+          <span class="chip">H/V gain · HS4, LS2, LS4</span>
+          <span class="chip">H/V signal-to-noise ratio</span>
+          <span class="chip">H/V RMSE positional error</span>
+          <span class="chip">Corrective saccade count</span>
+          <span class="chip">Corrective saccade amplitude</span>
+          <span class="chip">Corrective saccade duration</span>
+          <span class="chip">Corrective saccade velocity</span>
+          <span class="chip">Fixation frequency</span>
+          <span class="chip">Saccade frequency</span>
+        </div>
+        <p style="margin-top:10px; font-size:11.5px; color:#4a70a0;">12 metrics × 3 conditions (HS4, LS2, LS4)</p>
+      </div>
+
+      <div class="node green">
+        <div class="eyebrow">Fixation Stability · 10 Features</div>
+        <h2><span class="ico">🎯</span>Inhibitory Control Metrics</h2>
+        <div class="chips">
+          <span class="chip">Saccade count (single)</span>
+          <span class="chip">Fixation count (single)</span>
+          <span class="chip">Scan path length (single)</span>
+          <span class="chip">Saccade count (distracter)</span>
+          <span class="chip">Saccade amplitude (distracter)</span>
+          <span class="chip">Fixation count (distracter)</span>
+          <span class="chip">Fixation duration (distracter)</span>
+          <span class="chip">Scan path length (distracter)</span>
+          <span class="chip">Fixation stability score</span>
+          <span class="chip">Fixation number</span>
+        </div>
+      </div>
+
+      <div class="node red">
+        <div class="eyebrow">Antisaccade · 4 Features</div>
+        <h2><span class="ico">⚡</span>Prefrontal Inhibition Metrics</h2>
+        <div class="chips">
+          <span class="chip">Latency (reaction time)</span>
+          <span class="chip">Error rate</span>
+          <span class="chip">Error correction rate</span>
+          <span class="chip">Antisaccadic accuracy</span>
+        </div>
+        <p style="margin-top:10px; font-size:11.5px; color:#a04040;">Proven SCZ-deficit parameters · directly measures voluntary DLPFC suppression</p>
+      </div>
+
+    </div>
+
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <!-- Total features summary -->
+    <div class="node neutral">
+      <div class="eyebrow">Step 2.5 · Uniformity Check</div>
+      <h2><span class="ico">✅</span>Dataset Validation — 59 Features per Participant</h2>
+      <div style="display:flex; gap:28px; flex-wrap:wrap; margin-bottom:14px; align-items:center;">
+        <div><div class="feat-count" style="color:var(--c1)">9</div><div class="feat-label">Free-Viewing</div></div>
+        <div style="display:flex;align-items:center;font-size:22px;color:var(--muted);font-weight:700;">+</div>
+        <div><div class="feat-count" style="color:var(--c2)">36</div><div class="feat-label">Smooth Pursuit</div></div>
+        <div style="display:flex;align-items:center;font-size:22px;color:var(--muted);font-weight:700;">+</div>
+        <div><div class="feat-count" style="color:var(--c3)">10</div><div class="feat-label">Fixation Stab.</div></div>
+        <div style="display:flex;align-items:center;font-size:22px;color:var(--muted);font-weight:700;">+</div>
+        <div><div class="feat-count" style="color:var(--c4)">4</div><div class="feat-label">Antisaccade</div></div>
+        <div style="display:flex;align-items:center;font-size:22px;color:var(--muted);font-weight:700;">=</div>
+        <div><div class="feat-count" style="color:var(--c6)">59</div><div class="feat-label">Total Features</div></div>
+      </div>
+      <p>Every participant must have a complete value for all 59 columns. Missing data → impute or exclude. No participant may have partial task completion.</p>
+    </div>
+
+    <!-- ═══ STEP 3 ═══ -->
+    <div class="arr label">
+      <div class="ln"></div>
+      <div class="tag">Step 3 · Machine Learning</div>
+      <div class="hd"></div>
+    </div>
+
+    <div class="pill">Step 3 · Early Fusion ML Architecture</div>
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <!-- EARLY FUSION BANNER -->
+    <div class="fusion">
+      <div class="icon-big">🔀</div>
+      <div>
+        <h3>Early Fusion — Pool All 59 Features Into One Dataset</h3>
+        <p>Rather than training separate models per task (late fusion) and combining their outputs, all 59 features from all 4 tasks are merged into a single flat feature vector per participant and fed simultaneously into one unified model. This allows the algorithm to learn cross-task interaction patterns that no single-task model could detect.</p>
+      </div>
+    </div>
+
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <!-- Step 3.1 Model Architecture — full width -->
+    <div class="node purple" style="max-width:820px;">
+      <div class="eyebrow">Step 3.1 · Model Architecture</div>
+      <h2><span class="ico">🤖</span>GBDT · XGBoost</h2>
+      <p>Gradient-Boosted Decision Tree ensemble. Weak learners work sequentially — each tree corrects the residual error of the previous. Exceptionally effective on tabular biomarker data.</p>
+      <div class="chips">
+        <span class="chip">XGBoost (R / Python)</span>
+        <span class="chip">Modified 5-fold cross-validation</span>
+        <span class="chip">Hyperparameter tuning</span>
+        <span class="chip">Anti-overfitting regularisation</span>
+      </div>
+    </div>
+
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <!-- Step 3.2 Probability Score — full width with split bars -->
+    <div class="prob-box" style="max-width:820px;">
+      <div style="margin-bottom:6px;"><span style="font-family:'Lato',sans-serif; font-size:10px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#a08060;">Step 3.2 · Output</span></div>
+      <h3 style="font-size:15px; font-weight:800; color:#4a3520; margin-bottom:8px; display:flex; align-items:center; gap:10px;">🎯 Probability Score — SCZ vs HC (sums to 100%)</h3>
+      <p style="font-size:13px; color:#8a6848; margin-bottom:20px; line-height:1.7;">For each participant, the model produces a single bar split into <strong style="color:#c0504a;">SCZ %</strong> (red, left) and <strong style="color:#3aab6e;">HC %</strong> (green, right). The two segments always add to 100%.</p>
+
+      <div style="background:#fff; border-radius:12px; padding:16px 20px; border:1.5px solid #e8d9c5; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
+          <span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:800; color:#2c1f0e;">Subject A</span>
+          <span style="font-family:'Lato',sans-serif; font-size:11px; font-weight:700; color:#c0504a; background:#fdeeed; border-radius:5px; padding:3px 10px; border:1px solid #e8a8a5;">⚠ Likely Schizophrenia</span>
+        </div>
+        <div style="display:flex; height:36px; border-radius:10px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <div style="width:75%; background:linear-gradient(90deg,#e07070,#c0504a); display:flex; align-items:center; justify-content:center;"><span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:900; color:#fff;">SCZ · 75%</span></div>
+          <div style="width:25%; background:linear-gradient(90deg,#3aab6e,#2d8a58); display:flex; align-items:center; justify-content:center;"><span style="font-family:'Nunito',sans-serif; font-size:12px; font-weight:900; color:#fff;">HC · 25%</span></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-top:5px;"><span style="font-size:11px; color:#c0504a; font-weight:700;">← Schizophrenia</span><span style="font-size:11px; color:#3aab6e; font-weight:700;">Healthy Control →</span></div>
+      </div>
+
+      <div style="background:#fff; border-radius:12px; padding:16px 20px; border:1.5px solid #e8d9c5; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
+          <span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:800; color:#2c1f0e;">Subject B</span>
+          <span style="font-family:'Lato',sans-serif; font-size:11px; font-weight:700; color:#3aab6e; background:#e8f9f0; border-radius:5px; padding:3px 10px; border:1px solid #90d9b0;">✓ Likely Healthy Control</span>
+        </div>
+        <div style="display:flex; height:36px; border-radius:10px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <div style="width:10%; background:linear-gradient(90deg,#e07070,#c0504a); display:flex; align-items:center; justify-content:center;"><span style="font-family:'Nunito',sans-serif; font-size:10px; font-weight:900; color:#fff;">10%</span></div>
+          <div style="width:90%; background:linear-gradient(90deg,#3aab6e,#2d8a58); display:flex; align-items:center; justify-content:center;"><span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:900; color:#fff;">HC · 90%</span></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-top:5px;"><span style="font-size:11px; color:#c0504a; font-weight:700;">← Schizophrenia</span><span style="font-size:11px; color:#3aab6e; font-weight:700;">Healthy Control →</span></div>
+      </div>
+
+      <div style="background:#fff; border-radius:12px; padding:16px 20px; border:1.5px solid #e8d9c5; margin-bottom:16px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:6px;">
+          <span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:800; color:#2c1f0e;">Subject C</span>
+          <span style="font-family:'Lato',sans-serif; font-size:11px; font-weight:700; color:#d4822a; background:#fff8e0; border-radius:5px; padding:3px 10px; border:1px solid #f0c870;">~ Borderline · Needs Clinical Review</span>
+        </div>
+        <div style="display:flex; height:36px; border-radius:10px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <div style="width:55%; background:linear-gradient(90deg,#e07070,#c0504a); display:flex; align-items:center; justify-content:center;"><span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:900; color:#fff;">SCZ · 55%</span></div>
+          <div style="width:45%; background:linear-gradient(90deg,#3aab6e,#2d8a58); display:flex; align-items:center; justify-content:center;"><span style="font-family:'Nunito',sans-serif; font-size:13px; font-weight:900; color:#fff;">HC · 45%</span></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; margin-top:5px;"><span style="font-size:11px; color:#c0504a; font-weight:700;">← Schizophrenia</span><span style="font-size:11px; color:#3aab6e; font-weight:700;">Healthy Control →</span></div>
+      </div>
+
+      <p class="prob-note">Each bar spans 100%. Red (left) = SCZ probability · Green (right) = HC probability. A threshold at 50% converts to a binary label, but the raw split is always available for clinical review. Overall model AUC = <strong>0.87</strong> · Sensitivity 75% · Specificity 90%.</p>
+    </div>
+
+    <!-- ═══ TRAIN / VALIDATE SPLIT (now after prob score) ═══ -->
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+
+    <div class="split">
+      <div class="node purple">
+        <div class="eyebrow">Step 3.1 · Model Architecture</div>
+        <h2><span class="ico">🤖</span>GBDT · XGBoost</h2>
+        <p>Gradient-Boosted Decision Tree ensemble. Weak learners work sequentially — each tree corrects the residual error of the previous. Exceptionally effective on tabular biomarker data.</p>
+        <div class="chips">
+          <span class="chip">XGBoost (R / Python)</span>
+          <span class="chip">Modified 5-fold cross-validation</span>
+          <span class="chip">Hyperparameter tuning</span>
+          <span class="chip">Anti-overfitting regularisation</span>
+        </div>
+      </div>
+      <div class="node purple">
+        <div class="eyebrow">Step 3.2 · Output</div>
+        <h2><span class="ico">🎯</span>Probability Score</h2>
+        <p>For each participant the model outputs a single continuous score — the probability of schizophrenia vs healthy control. The two segments always sum to 100%. Clinicians retain full judgment on the final call.</p>
+        <div class="chips">
+          <span class="chip">0–100 continuous score</span>
+          <span class="chip">SCZ % + HC % = 100%</span>
+          <span class="chip">Threshold at 50 for binary label</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ PROBABILITY BAR VISUAL ═══ -->
+    <div class="arr label">
+    <div class="arr label">
+      <div class="ln"></div>
+      <div class="tag">TARGET PERFORMANCE</div>
+      <div class="hd"></div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics">
+      <div class="mc"><div class="val">87–90%</div><div class="lbl">AUC Target</div></div>
+      <div class="mc"><div class="val">&gt;75%</div><div class="lbl">Sensitivity</div></div>
+      <div class="mc"><div class="val">&gt;88%</div><div class="lbl">Specificity</div></div>
+      <div class="mc"><div class="val">&gt;83%</div><div class="lbl">Accuracy</div></div>
+      <div class="mc"><div class="val">59</div><div class="lbl">Features</div></div>
+      <div class="mc"><div class="val">4</div><div class="lbl">Tasks</div></div>
+    </div>
+
+    <!-- ═══ OUTPUT ═══ -->
+    <div class="arr label">
+      <div class="ln"></div>
+      <div class="tag">Output &amp; Clinical Utility</div>
+      <div class="hd"></div>
+    </div>
+
+    <div class="output">
+      <h2><span>✦</span>Model Outputs &amp; Clinical Applications</h2>
+      <div class="rows">
+        <div class="out-row"><div class="dot" style="background:var(--c6)"></div><span><strong style="color:#2c1f0e">Primary Output:</strong> A per-subject probability score (0–100) indicating likelihood of SCZ. Clinicians can use this alongside their own assessment rather than relying on a hard binary label alone.</span></div>
+        <div class="out-row"><div class="dot" style="background:var(--c1)"></div><span><strong style="color:#2c1f0e">Early Detection:</strong> Because abnormalities appear at first-episode (and even in the prodromal phase), the model can flag at-risk individuals before full clinical psychosis onset, supporting earlier intervention.</span></div>
+        <div class="out-row"><div class="dot" style="background:var(--c3)"></div><span><strong style="color:#2c1f0e">Trait Marker:</strong> Eye-movement abnormalities are present regardless of illness duration, medication status, or disease stage — making this a stable biological trait marker, not a state-dependent effect.</span></div>
+        <div class="out-row"><div class="dot" style="background:var(--c4)"></div><span><strong style="color:#2c1f0e">Feature Importance:</strong> GBDT outputs ranked feature importances, identifying which of the 59 variables are most diagnostic. Free-viewing scan path length and fixation dispersion rank highest; antisaccade error rate adds new discriminatory power.</span></div>
+      </div>
+    </div>
+
+    <!-- Why box -->
+    <div class="arr"><div class="ln"></div><div class="hd"></div></div>
+    <div class="why">
+      <h3>Why Each Task Adds Unique Value to the Model</h3>
+      <div class="why-grid">
+        <div class="why-card">
+          <div class="wc-icon">🖼️</div>
+          <div class="wc-title" style="color:var(--c1)">Free-Viewing</div>
+          <div class="wc-desc">Captures real-world visual exploration deficits. Restricted scanning (shorter scan paths, lower dispersion) is the strongest single discriminator of SCZ.</div>
+        </div>
+        <div class="why-card">
+          <div class="wc-icon">↔️</div>
+          <div class="wc-title" style="color:var(--c2)">Smooth Pursuit</div>
+          <div class="wc-desc">Measures sensorimotor prediction and visual motion processing. SCZ patients show worse gain, more corrective saccades, and higher positional error.</div>
+        </div>
+        <div class="why-card">
+          <div class="wc-icon">⊕</div>
+          <div class="wc-title" style="color:var(--c3)">Fixation Stability</div>
+          <div class="wc-desc">Tests saccadic inhibition under visual competition. Reveals DLPFC dysfunction — patients fail to suppress eye movements toward irrelevant distractors.</div>
+        </div>
+        <div class="why-card">
+          <div class="wc-icon">🔀</div>
+          <div class="wc-title" style="color:var(--c4)">Antisaccade</div>
+          <div class="wc-desc">The most targeted probe of voluntary prefrontal inhibition. SCZ patients make significantly more errors and have longer latencies — a well-replicated endophenotype.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- legend -->
+    <div class="legend">
+      <div class="li"><div class="sw" style="background:#e07b39;"></div>Free-Viewing (9 features)</div>
+      <div class="li"><div class="sw" style="background:#5b8dd9;"></div>Smooth Pursuit (36 features)</div>
+      <div class="li"><div class="sw" style="background:#3aab6e;"></div>Fixation Stability (10 features)</div>
+      <div class="li"><div class="sw" style="background:#c0504a;"></div>Antisaccade (4 features)</div>
+      <div class="li"><div class="sw" style="background:#8b5db8;"></div>ML Model / Fusion</div>
+      <div class="li"><div class="sw" style="background:#d4822a;"></div>Output / Clinical Utility</div>
+    </div>
+
+  </div><!-- .flow -->
+</div><!-- .page -->
+</body>
+</html>

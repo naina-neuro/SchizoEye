@@ -1,0 +1,165 @@
+
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  .wrap{font-family:var(--font-sans);padding:28px 24px 36px;max-width:900px;margin:0 auto}
+  .col-row{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:0}
+  .col-label{font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--color-text-secondary);text-align:center;margin-bottom:10px}
+  .node{border-radius:8px;padding:10px 14px;text-align:center;border:1px solid transparent;position:relative}
+  .node-title{font-size:13px;font-weight:500;line-height:1.3}
+  .node-sub{font-size:11px;margin-top:3px;line-height:1.4;opacity:.85}
+
+  .purple{background:#EEEDFE;border-color:#7F77DD;color:#3C3489}
+  .purple .node-sub{color:#534AB7}
+  .teal{background:#E1F5EE;border-color:#1D9E75;color:#085041}
+  .teal .node-sub{color:#0F6E56}
+  .coral{background:#FAECE7;border-color:#D85A30;color:#712B13}
+  .coral .node-sub{color:#993C1D}
+  .blue{background:#E6F1FB;border-color:#378ADD;color:#0C447C}
+  .blue .node-sub{color:#185FA5}
+  .amber{background:#FAEEDA;border-color:#BA7517;color:#633806}
+  .amber .node-sub{color:#854F0B}
+  .green{background:#EAF3DE;border-color:#639922;color:#27500A}
+  .green .node-sub{color:#3B6D11}
+  .gray{background:var(--color-background-secondary);border-color:var(--color-border-secondary);color:var(--color-text-primary)}
+  .gray .node-sub{color:var(--color-text-secondary)}
+  .diamond-wrap{display:flex;justify-content:center;margin:6px 0}
+  .diamond{width:110px;height:56px;background:#E6F1FB;border:1px solid #378ADD;clip-path:polygon(50% 0%,100% 50%,50% 100%,0% 50%);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;color:#0C447C}
+
+  .arrow-down{display:flex;justify-content:center;align-items:center;height:22px}
+  .arrow-down svg{width:14px;height:22px}
+
+  .merge-row{display:grid;grid-template-columns:1fr 60px 1fr;align-items:center;margin:4px 0}
+  .merge-line{height:2px;border-radius:1px}
+  .merge-dot{width:10px;height:10px;border-radius:50%;margin:0 auto}
+
+  .pipeline{margin-top:0}
+  .pipeline-step{margin-bottom:4px}
+  .pipeline-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--color-text-secondary);text-align:center;margin-bottom:3px}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-bottom:22px;font-size:11px}
+  .leg-item{display:flex;align-items:center;gap:5px}
+  .leg-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+
+  .inputs-row{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:6px}
+  .section-divider{border:none;border-top:1px dashed var(--color-border-tertiary);margin:14px 0}
+  .badge{display:inline-block;font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;margin-bottom:6px;letter-spacing:.04em}
+  .col{display:flex;flex-direction:column;gap:6px}
+
+  @media(prefers-color-scheme:dark){
+    .purple{background:#26215C;border-color:#7F77DD;color:#CECBF6}
+    .purple .node-sub{color:#AFA9EC}
+    .teal{background:#04342C;border-color:#1D9E75;color:#9FE1CB}
+    .teal .node-sub{color:#5DCAA5}
+    .coral{background:#4A1B0C;border-color:#D85A30;color:#F5C4B3}
+    .coral .node-sub{color:#F0997B}
+    .blue{background:#042C53;border-color:#378ADD;color:#B5D4F4}
+    .blue .node-sub{color:#85B7EB}
+    .amber{background:#412402;border-color:#BA7517;color:#FAC775}
+    .amber .node-sub{color:#EF9F27}
+    .green{background:#173404;border-color:#639922;color:#C0DD97}
+    .green .node-sub{color:#97C459}
+    .diamond{background:#042C53;color:#B5D4F4}
+  }
+</style>
+
+<div class="wrap">
+
+  <div class="legend">
+    <div class="leg-item"><div class="leg-dot" style="background:#EEEDFE;border:1px solid #7F77DD"></div><span style="color:var(--color-text-secondary)">Geometry pipeline</span></div>
+    <div class="leg-item"><div class="leg-dot" style="background:#E6F1FB;border:1px solid #378ADD"></div><span style="color:var(--color-text-secondary)">WebGazer + sensors</span></div>
+    <div class="leg-item"><div class="leg-dot" style="background:#FAEEDA;border:1px solid #BA7517"></div><span style="color:var(--color-text-secondary)">Main pipeline</span></div>
+    <div class="leg-item"><div class="leg-dot" style="background:#E1F5EE;border:1px solid #1D9E75"></div><span style="color:var(--color-text-secondary)">I/O</span></div>
+  </div>
+
+  <div class="inputs-row">
+    <div>
+      <div class="col-label">Camera input</div>
+      <div class="node teal">
+        <div class="node-title">Webcam feed</div>
+        <div class="node-sub">Live video stream</div>
+      </div>
+    </div>
+    <div>
+      <div class="col-label">Sensor input</div>
+      <div class="node teal">
+        <div class="node-title">Device orientation</div>
+        <div class="node-sub">Gyro beta / gamma</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-row" style="margin-top:6px">
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#1D9E75" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#1D9E75" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#1D9E75" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#1D9E75" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+  </div>
+
+  <div class="col-row">
+    <div class="col">
+      <div class="col-label" style="margin-bottom:4px">Pupil geometry pipeline</div>
+      <div class="node purple"><div class="node-title">Crop to 640×480</div><div class="node-sub">Fixed aspect ratio</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Greyscale convert</div><div class="node-sub">0.299R + 0.587G + 0.114B</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Darkest area scan</div><div class="node-sub">20×20 block search grid</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Adaptive threshold</div><div class="node-sub">Darkest pixel + 18</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Mask region</div><div class="node-sub">250px box around pupil</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Binary dilation</div><div class="node-sub">3×3 kernel × 3 passes</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Blob detect + filter</div><div class="node-sub">BFS flood fill, area &gt;900, ratio ≤3.2</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node purple"><div class="node-title">Ellipse fit</div><div class="node-sub">Central moments → eigenvalues</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#7F77DD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#7F77DD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node coral"><div class="node-title">Confidence score</div><div class="node-sub">Roundness × area → dynamic Kalman R</div></div>
+    </div>
+
+    <div class="col">
+      <div class="col-label" style="margin-bottom:4px">WebGazer + sensor track</div>
+      <div class="node blue"><div class="node-title">WebGazer ML model</div><div class="node-sub">Ridge regression</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#378ADD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#378ADD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="diamond-wrap">
+        <div class="diamond"><span>Blink?</span></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:0 12px;margin-top:2px;margin-bottom:4px">
+        <span style="font-size:10px;color:#E24B4A;font-weight:500">YES → freeze pos</span>
+        <span style="font-size:10px;color:#378ADD;font-weight:500">NO → continue</span>
+      </div>
+      <div class="node blue"><div class="node-title">Cal. sample collection</div><div class="node-sub">IQR filter + confidence-weighted avg</div></div>
+      <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#378ADD" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#378ADD" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+      <div class="node teal"><div class="node-title">Tilt reference lock</div><div class="node-sub">beta + gamma at cal end</div></div>
+      <div style="flex:1"></div>
+      <div style="margin-top:12px;border-radius:8px;border:1px dashed var(--color-border-secondary);padding:12px 10px">
+        <div style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin-bottom:8px;letter-spacing:.04em">Blink detection channels</div>
+        <div class="node blue" style="margin-bottom:6px"><div class="node-title">Channel A</div><div class="node-sub">WebGazer null frames ≥3</div></div>
+        <div class="node purple"><div class="node-title">Channel B</div><div class="node-sub">Ellipse axis ratio &lt;0.30</div></div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="section-divider">
+
+  <div style="text-align:center;font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--color-text-secondary);margin-bottom:10px">Both tracks merge → main pipeline</div>
+
+  <div class="col" style="max-width:480px;margin:0 auto;gap:6px">
+    <div class="node amber"><div class="node-title">Weighted 2D polynomial regression</div><div class="node-sub">6-term WLS: [1, x, y, x², y², xy] normalised</div></div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#BA7517" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#BA7517" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="node amber"><div class="node-title">Head + screen-tilt correction</div><div class="node-sub">IED depth scale · 1/cos(Δβ) · 1/cos(Δγ)</div></div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#BA7517" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#BA7517" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="node amber"><div class="node-title">Drift offset apply</div><div class="node-sub">x += driftX · y += driftY</div></div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#BA7517" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#BA7517" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="node amber"><div class="node-title">Kalman filter</div><div class="node-sub">4-state [x, y, vx, vy] · dynamic R from confidence</div></div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#BA7517" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#BA7517" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="node amber" style="position:relative">
+      <div class="node-title">Velocity-adaptive smoothing</div>
+      <div class="node-sub">alpha 0.07 (fixation) → 0.85 (saccade)</div>
+      <div style="position:absolute;right:-120px;top:50%;transform:translateY(-50%);font-size:10px;color:var(--color-text-secondary);text-align:left;width:110px;line-height:1.4">↻ fixation detector nudges drift offsets</div>
+    </div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#BA7517" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#BA7517" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="node amber"><div class="node-title">Clamp to viewport</div><div class="node-sub">max(0, min(W−1, x))</div></div>
+    <div class="arrow-down"><svg viewBox="0 0 14 22" fill="none"><line x1="7" y1="0" x2="7" y2="16" stroke="#639922" stroke-width="1.5"/><polyline points="3,12 7,18 11,12" stroke="#639922" stroke-width="1.5" fill="none" stroke-linejoin="round"/></svg></div>
+    <div class="node green"><div class="node-title">Gaze output</div><div class="node-sub">{ x, y, velocity, isBlink, confidence } → API listeners</div></div>
+  </div>
+
+</div>
