@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 import io
 import re
+import math
 import base64
 import traceback
 import uuid
@@ -289,6 +290,31 @@ def classify():
             return jsonify({'success': False, 'error': 'No features provided'}), 400
 
         missing = [c for c in _CLASSIFY_FEATURE_ORDER if features.get(c) is None]
+
+        # Validate every non-missing feature is numeric and finite before it
+        # ever reaches the model. `missing` was previously computed but never
+        # checked, so incomplete/garbled payloads (NaN, strings, None) were
+        # silently reindexed to NaN and passed straight into predict_proba.
+        invalid = []
+        for c in _CLASSIFY_FEATURE_ORDER:
+            if c in missing:
+                continue
+            try:
+                fv = float(features.get(c))
+            except (TypeError, ValueError):
+                invalid.append(c)
+                continue
+            if not math.isfinite(fv):
+                invalid.append(c)
+
+        if missing or invalid:
+            return jsonify({
+                'success': False,
+                'error': 'Feature vector is incomplete or contains non-numeric/non-finite values.',
+                'missing_features': missing,
+                'invalid_features': invalid,
+            }), 400
+
         row = pd.DataFrame([features]).reindex(columns=_CLASSIFY_FEATURE_ORDER)
 
         probs = _clf.predict_proba(row)[0]
@@ -830,11 +856,24 @@ def save_results():
         print("[DEBUG] Inserting session into MongoDB...")
         insert_result = db[SESSIONS_COLLECTION].insert_one(session_doc)
         print(f"[DEBUG] Session inserted with ID: {insert_result.inserted_id}")
+        session_id_str = str(insert_result.inserted_id)
+        # The frontend's completion payload (postMessage to a parent/opener,
+        # used by embedding partners) reads prediction/features/feature_order/
+        # report_url off this response. Those fields were never returned, so
+        # reportUrl was built as "<API_BASE>undefined" and prediction/features
+        # silently fell back to whatever the frontend already had in memory.
+        # /sessions/<id>/pdf already regenerates the PDF on demand if the
+        # GridFS upload above failed, so report_url is always safe to return.
         return jsonify({
             'success': True,
             'message': 'Session saved to MongoDB Atlas successfully',
-            'session_id': str(insert_result.inserted_id),
+            'session_id': session_id_str,
+            'subject_id': subject_id,
             'patient_id': patient_id,
+            'prediction': session_doc['results'].get('prediction'),
+            'features': session_doc['results'].get('features', {}),
+            'feature_order': REQUIRED_FEATURES,
+            'report_url': f'/sessions/{session_id_str}/pdf',
             'gridfs_refs': {key: str(value) for key, value in session_doc['gridfs_refs'].items()}
         })
 

@@ -5,7 +5,7 @@
 const BatteryController = (() => {
   const API_BASE = typeof window.getApiBase === 'function'
     ? window.getApiBase()
-    : (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
+    : (window.SCHIZOEYE_API_BASE || 'https://schizoeyeclassification.onrender.com').replace(/\/$/, '');
   const TEST_TOKEN = new URLSearchParams(window.location.search).get('token');
   /** Return the optional test-authorization header. */
   const apiHeaders = () => TEST_TOKEN ? {'X-Test-Token': TEST_TOKEN} : {};
@@ -33,7 +33,9 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
   const SPEM_FIXATION_DELAY_MS = 2000;
   const SPEM_REST_DELAY_MS = 2000;
   // Formula: pixel threshold = angular speed × pixels per degree.
-  // Approximate 100°/s pursuit cutoff converted using the default 37 px/degree.
+  // Approximate 100°/s pursuit cutoff at the 37 px/degree default.
+  // Unused directly — renderSPEMResults() recomputes this per-session from
+  // the actual pxPerDeg (see spemSaccadeThrPx) so it's correct on other screens.
   const SPEM_SACCADE_THR_PX = 3700;
   const spemTestSequence = [
     { id: 'Horizontal_0.4Hz', type: 'horizontal', freq: 0.4 },
@@ -810,6 +812,12 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
     const ts = now.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) + '  ·  ' + now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
     $('spem-report-meta').textContent = `Subject: ${subjectId}  ·  ${ts}`;
     const container = $('spem-graphs-container'); container.innerHTML = '';
+    // SPEM_SACCADE_THR_PX is a fixed px value derived from the 37 px/deg
+    // default. Recompute it from this session's actual pxPerDeg so the
+    // saccade markers/threshold line stay correct on other screen sizes.
+    // Display-only: the exported HS4/LS2/LS4 features use the degree-based
+    // Engbert-Kliegl detector in extractPursuit() and are unaffected.
+    const spemSaccadeThrPx = d2p(100);
 
     // Plot and canvas colors.
     const P = { 
@@ -836,7 +844,7 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
         const vEye=Math.abs((smEyeX[i+1]-smEyeX[i-1])/dt);
         const vTarget=Math.abs(ampX*omega*Math.cos(omega*time[i]));
         timeVel.push(time[i]); eyeVel.push(vEye); targetVel.push(vTarget);
-        if(vEye>SPEM_SACCADE_THR_PX) { if(!saccadeT.length||time[i]-saccadeT[saccadeT.length-1]>0.1) { saccadeT.push(time[i]); saccadeX.push(smEyeX[i]); } }
+        if(vEye>spemSaccadeThrPx) { if(!saccadeT.length||time[i]-saccadeT[saccadeT.length-1]>0.1) { saccadeT.push(time[i]); saccadeX.push(smEyeX[i]); } }
         else if(vTarget>50) validGains.push(Math.min(vEye/vTarget,1.5));
       }
       const avgGain = validGains.length ? validGains.reduce((a,b)=>a+b,0)/validGains.length : 0;
@@ -850,7 +858,7 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
         {x:saccadeT,y:saccadeX,mode:'markers',name:'Saccade',marker:{color:P.orange,size:10,symbol:'circle'},xaxis:'x',yaxis:'y'},
         {x:timeVel,y:targetVel,mode:'lines',name:'Target Vel',line:{color:P.redDim,width:1.8,dash:'dash'},xaxis:'x',yaxis:'y2'},
         {x:timeVel,y:eyeVel,mode:'lines',name:'Eye Vel',line:{color:P.blue,width:2},xaxis:'x',yaxis:'y2'},
-        {x:[timeVel[0],timeVel[timeVel.length-1]],y:[SPEM_SACCADE_THR_PX,SPEM_SACCADE_THR_PX],mode:'lines',name:'Threshold',line:{color:P.amber,width:1.2,dash:'dot'},xaxis:'x',yaxis:'y2'},
+        {x:[timeVel[0],timeVel[timeVel.length-1]],y:[spemSaccadeThrPx,spemSaccadeThrPx],mode:'lines',name:'Threshold',line:{color:P.amber,width:1.2,dash:'dot'},xaxis:'x',yaxis:'y2'},
       ], {
         title:{text:`<b>${task.id.replace(/_/g,' ')}</b>  |  Avg Velocity Gain: ${avgGain.toFixed(2)}  |  Saccades: ${saccadeHz} Hz`,font:{color:P.title,size:14},x:0.5,xanchor:'center'},
         paper_bgcolor:P.paper, plot_bgcolor:P.plot, font:{color:P.label,size:11},
