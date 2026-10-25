@@ -1,96 +1,13 @@
-/*
- * ============================================================
- *  battery-controller.js  —  Oculomotor Battery
- * ============================================================
- *
- *  The main application controller. Orchestrates all three
- *  tasks and the unified results screen.
- *
- *  ── TASK FLOW ───────────────────────────────────────────
- *  start()
- *    → camera check → video guide → grid calibration
- *    → onCalibrationComplete() → showTaskTransition(0)
- *
- *  Task 1 — SPEM (Smooth Pursuit Eye Movement)
- *    startSPEM() → practice trial → 3 clinical sequences
- *    (Horizontal_0.4Hz, Lissajous_0.2Hz, Lissajous_0.4Hz)
- *    each 20 s, target animated via rAF
- *    → finishSPEM() → showTaskTransition(1)
- *
- *  Task 2 — SchizoEye
- *    startSZ() [async]
- *      Phase I:  6 fixation trials (none/single/multi distractor)
- *      Phase II: 10 antisaccade trials (random ecc + side)
- *    → showTaskTransition(2)
- *
- *  Task 3 — Free Viewing
- *    startFreeViewing() → 25 images × 8 s
- *    gaze recorded by RawGazeCollector
- *    → finishFreeViewing() → showAllResults()
- *
- *  ── RESULTS ─────────────────────────────────────────────
- *  showAllResults() calls:
- *    renderFVResults()    — per-image sample count table
- *    renderSPEMResults()  — Plotly dual-axis graphs per sequence
- *    renderSZResults()    — scatter plots, waterfall, metric cards,
- *                           clinical interpretation flags
- *    runAIClassification() — 3-step pipeline:
- *        1. Parse raw gaze rows from all three tasks
- *        2. Extract 59 oculomotor features (pure JS, see below)
- *        3. POST features to Flask /classify endpoint (deployed model)
- *        → renderAIResults() + save to /save_results
- *        → reveal PDF download button
- *
- *  ── FEATURE EXTRACTOR (embedded inside this IIFE) ───────
- *  A pure-JS port of the Python oculomotor feature pipeline.
- *  Contained within this file because it shares state
- *  (spemDataLog, szCsv, RawGazeCollector) with the task code.
- *
- *  Sections inside battery-controller.js:
- *    FEATURE_ORDER  — ordered list of 59 feature names
- *    BOUNDS         — physiological clamp ranges per feature
- *    CONFIG         — algorithm hyperparameters (IDT, pursuit…)
- *    normalizeFv / normalizeSpem / normalizeSz
- *    idtFixations / idtResidualFixations
- *    computePointSpeeds / buildTransitions
- *    estimateScreenGeometry
- *    resampleLinear / amplitudeAtFrequency / periodogram
- *    computeLogSNR / computeGain / computeRmse
- *    extractFreeViewing / extractPursuit
- *    extractFixationCondition / extractAntisaccade
- *    roundFeature / finalizeFeature
- *    buildFvRows / buildSpemRowsForExtractor / buildSzRowsForExtractor
- *    runAIClassification / renderAIResults / renderFeaturesOnly
- *
- *  ── CSV / PDF EXPORT ─────────────────────────────────────
- *  downloadFVCSV()      raw gaze CSV (image_index, x, y, …)
- *  downloadSPEMCSV()    SPEM gaze CSV (Timestamp, phase, target, eye)
- *  downloadSZCSV()      SZ gaze CSV  (Timestamp_ms, phase, Gaze, Target)
- *  downloadAllCSV()     all three, staggered 600ms apart
- *  downloadSPEMPlots()  exports Plotly graphs as PNG via Plotly.downloadImage
- *  downloadPDFReport()  POSTs to Flask /generate-report, streams PDF blob
- *
- *  ── PUBLIC API ───────────────────────────────────────────
- *  Returned from IIFE:
- *    start, startVideoCal, startClickCal, onCalibrationComplete,
- *    downloadFVCSV, downloadSPEMCSV, downloadSZCSV, downloadAllCSV,
- *    downloadSPEMPlots, downloadPDFReport
- *
- *  Dependencies
- *  ────────────
- *  EyeTracker        (eye-tracker.js)
- *  RawGazeCollector  (gaze-collector.js)
- *  Plotly            (CDN — plotly-2.24.1.min.js)
- *  (audio instructions removed — no audio-utils.js)
- *  Flask backend     https://schizoeye-backend.onrender.com  (for /classify, /save_results,
- *                                            /generate-report endpoints)
- * ============================================================
+/**
+ * Coordinates the eye-tracking tasks, results, feature extraction, and exports.
+ * Uses EyeTracker and RawGazeCollector for gaze data and the backend for reports and inference.
  */
 const BatteryController = (() => {
   const API_BASE = typeof window.getApiBase === 'function'
     ? window.getApiBase()
     : (window.SCHIZOEYE_API_BASE || 'https://schizoeye-backend.onrender.com').replace(/\/$/, '');
   const TEST_TOKEN = new URLSearchParams(window.location.search).get('token');
+  /** Return the optional test-authorization header. */
   const apiHeaders = () => TEST_TOKEN ? {'X-Test-Token': TEST_TOKEN} : {};
   // ── State ──────────────────────────────────────────────────────────────────
   let screenDiagonalInches = 15.6;  // default, overwritten in start()
@@ -115,10 +32,8 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
   const SPEM_TASK_DURATION_MS = 20000;
   const SPEM_FIXATION_DELAY_MS = 2000;
   const SPEM_REST_DELAY_MS = 2000;
-  // FIX BC-1 (CRITICAL): Was 2000 px/s = only ~54°/s at 37px/deg.
-  // Normal smooth pursuit peaks at 30–50°/s and saccades start above ~80–100°/s.
-  // 2000 px/s incorrectly flagged the entire pursuit trace as saccades.
-  // Correct clinical threshold: ~100°/s × 37 px/deg = 3700 px/s.
+  // Formula: pixel threshold = angular speed × pixels per degree.
+  // Approximate 100°/s pursuit cutoff converted using the default 37 px/degree.
   const SPEM_SACCADE_THR_PX = 3700;
   const spemTestSequence = [
     { id: 'Horizontal_0.4Hz', type: 'horizontal', freq: 0.4 },
@@ -130,67 +45,55 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
   let spemGlobalCSVContent = '';
 
   // SchizoEye state
-  // NOTE: szN normative values now in DEGREES (converted from pixels for clinical display)
-  // rms: 35px ≈ 0.95° at 37px/deg; ratio: dimensionless; err: 0.25 (25%); lat: 300ms
+  // Normative thresholds use degrees for spatial measures and milliseconds for latency.
   const szN = { rms: 0.95, ratio: 1.8, err: 0.25, lat: 300 };  // rms in °, lat in ms
   let szFixT = [], szAntiT = [], szCsv = [], szTaskStartTime = 0;
 
-  // SPEM adapter
+  // Adapts EyeTracker callbacks to the SPEM task.
   let _spemGazeHandler = null, _spemPollTimer = null;
   const SpemAdapter = {
+    /** Invoke the callback once eye-tracker calibration is ready. */
     waitForReady(cb) { _spemPollTimer = setInterval(() => { if (EyeTracker.isCalibrated()) { clearInterval(_spemPollTimer); cb(); } }, 300); },
+    /** Subscribe to non-blink gaze coordinates. */
     subscribe(fn) { _spemGazeHandler = (d) => { if (!d.isBlink) fn({ x: d.x, y: d.y }); }; EyeTracker.onGaze(_spemGazeHandler); },
+    /** Remove the SPEM gaze callback. */
     unsubscribe() { if (_spemGazeHandler) { EyeTracker.offGaze(_spemGazeHandler); _spemGazeHandler = null; } },
+    /** Return the calibration error formatted for display. */
     getCalError() { const e = EyeTracker.getCalibrationError(); return e ? e.toFixed(1) + ' px' : '—'; }
   };
 
-  // FIX BC-MATH-11 / SAMPLING-RATE UNIFICATION: SzTracker used to be
-  // PULL-based — `getGaze()` was called once per animation-frame tick
-  // inside the trial render loop, gated by display paint rate, then
-  // deduplicated against the previous pulled value. SpemAdapter, right
-  // above, was already PUSH-based (`EyeTracker.onGaze(fn)` — fired once
-  // per genuinely new frame the tracker actually processed). Mixing pull-
-  // at-paint-rate with push-at-processing-rate is the root cause of SZ
-  // and SPEM ever showing different achieved sample rates within the same
-  // recording session on the same camera: SZ's true rate was bounded by
-  // whichever was slower, paint rate or tracker rate, while SPEM's was
-  // bounded only by the tracker. SzTracker now uses the identical push
-  // pattern as SpemAdapter, so both — and, once gaze-collector.js is
-  // patched the same way, free-viewing too — are bounded only by the same
-  // real ceiling: how fast EyeTracker (eye-tracker.js) can actually
-  // process camera frames, which the file's own docs put at ~33-50 FPS on
-  // typical consumer hardware and which we saw hit ~60 Hz on a faster
-  // machine. There is no dedup step here because a push-based onGaze
-  // listener already fires only on genuinely new gaze estimates.
+  // Adapts EyeTracker callbacks to the SchizoEye task.
   let _szGazeHandler = null;
   const SzTracker = {
+    /** Report whether gaze calibration has completed. */
     isCalibrated() { return EyeTracker.isCalibrated(); },
+    /** Subscribe to non-blink gaze coordinates. */
     subscribe(fn) {
       this.unsubscribe();
       _szGazeHandler = (d) => { if (!d.isBlink) fn({ x: d.x, y: d.y }); };
       EyeTracker.onGaze(_szGazeHandler);
     },
+    /** Remove the SchizoEye gaze callback. */
     unsubscribe() {
       if (_szGazeHandler) { EyeTracker.offGaze(_szGazeHandler); _szGazeHandler = null; }
     },
   };
 
   const $ = id => document.getElementById(id);
+  /** Wait for the next browser animation frame. */
   const frame = () => new Promise(r => requestAnimationFrame(r));
-  // Cross-browser safe wait using setTimeout (reliable across all browsers)
+  /** Wait for a non-negative duration using a timer. */
   const wait = ms => new Promise(r => setTimeout(r, Math.max(0, ms)));
-  // Timed frame loop: uses performance.now() consistently (not rAF timestamps
-  // which use a different origin in Firefox/Safari and can cause immediate exit).
-  // Falls back to setTimeout when tab is backgrounded (rAF throttled in hidden tabs).
+  /** Run a timed callback loop, using timers while the tab is hidden. */
   const timedLoop = (durationMs, cb) => new Promise(resolve => {
     const start = performance.now();
     const end   = start + durationMs;
+    /** Run one iteration and schedule the next until the duration expires. */
     function tick() {
       const now = performance.now();
       if (now >= end) { resolve(); return; }
       try { cb(now); } catch(e) { console.warn('[timedLoop] cb error:', e); }
       if (document.hidden) {
-        // Tab hidden: rAF is throttled — use setTimeout to keep the loop alive
         const remaining = end - performance.now();
         if (remaining > 0) setTimeout(tick, Math.min(16, remaining));
         else resolve();
@@ -200,13 +103,19 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
     }
     requestAnimationFrame(tick);
   });
+  /** Convert degrees to pixels: pixels = degrees × pixelsPerDegree. */
   const d2p = d => d * pxPerDeg;
+  /** Calculate the arithmetic mean, x̄ = Σx / n, or zero for an empty array. */
   const mean = a => a.length ? a.reduce((s,v)=>s+v,0)/a.length : 0;
+  /** Calculate RMS 2D displacement: sqrt(mean(dx² + dy²)). */
   const rms  = pts => pts.length ? Math.sqrt(pts.reduce((s,p)=>s+p.dx*p.dx+p.dy*p.dy,0)/pts.length) : 0;
+  /** Calculate population SD: sqrt(mean((x - mean(x))²)). */
   const sd   = a => { const m=mean(a); return Math.sqrt(mean(a.map(v=>(v-m)**2))); };
+  /** Map a metric value to its display severity class. */
   const cls  = (v,t1,t2) => v < t1 ? 'ok' : v < t2 ? 'warn' : 'alert';
 
-  // ── Start Battery ──────────────────────────────────────────────────────────
+  // ── Battery startup ───────────────────────────────────────────────────────
+  /** Read participant details, calculate screen scale, and open camera setup. */
   function start() {
     if (typeof window.TestDiag === 'function') window.TestDiag('BatteryController.start begin');
     if (typeof window._stopAlignStream === 'function') {
@@ -221,22 +130,17 @@ let pxPerDeg = 37;                 // safe default for 15.6" 1920×1080 at 60 cm
     patientAge = $('global-patient-age').value.trim();
     patientSex = $('global-patient-sex').value.trim();
     panssScore = $('global-panss-score').value.trim() || '';
-    //changed--added formulae to find px per degree(ppd)
     const diagInput = $('global-screen-diagonal');
     screenDiagonalInches = diagInput ? parseFloat(diagInput.value) || 15.6 : 15.6;
 
-// Compute pixels per degree of visual angle.
-// Formula: pxPerDeg = screenDiagonalPx / screenDiagonalDeg
-// screenDiagonalPx  = sqrt(screenW^2 + screenH^2)
-// screenDiagonalIn  = user-supplied value (inches)
-// pxPerIn           = screenDiagonalPx / screenDiagonalInches
-// 1 deg of vis angle at 60cm = 2 * 60cm * tan(0.5°) ≈ 1.0472 cm ≈ 0.412 inches
-// pxPerDeg = pxPerIn * 0.412
-const screenDiagPx = Math.hypot(window.innerWidth, window.innerHeight);
-const pxPerInch    = screenDiagPx / screenDiagonalInches;
-const inchesPerDeg = 2 * 60 * Math.tan(0.5 * Math.PI / 180) / 2.54;  // ~0.412 in/deg at 60 cm
-pxPerDeg = pxPerInch * inchesPerDeg;
-console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${screenDiagonalInches}″, ${screenDiagPx.toFixed(0)}px)`);
+    // Pythagorean theorem: diagonalPx = sqrt(widthPx² + heightPx²).
+    // Visual-angle formula: px/degree = (diagonal pixels / diagonal inches)
+    // times (2 × viewing distance × tan(0.5°) / 2.54).
+    const screenDiagPx = Math.hypot(window.innerWidth, window.innerHeight);
+    const pxPerInch = screenDiagPx / screenDiagonalInches;
+    const inchesPerDeg = 2 * 60 * Math.tan(0.5 * Math.PI / 180) / 2.54;
+    pxPerDeg = pxPerInch * inchesPerDeg;
+    console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${screenDiagonalInches}″, ${screenDiagPx.toFixed(0)}px)`);
     // Automatically trigger Fullscreen mode for the whole test
     if (document.documentElement.requestFullscreen) {
         document.documentElement.requestFullscreen().catch(err => {
@@ -253,14 +157,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     $('camera-check-screen').classList.remove('hidden');
     if (typeof window.TestDiag === 'function') window.TestDiag('camera-check-screen visible; requesting preview camera');
 
-    // FIX BC-7 (CRITICAL): eye-tracker.js v9.0 does NOT use WebGazer — it creates its
-    // own hidden <video> element appended to <body>. The old code looked for
-    // '#webgazerVideoFeed' which never exists, so the cam-stage was always empty
-    // and MediaPipe face-alignment detection never ran on real video.
-    //
-    // Fix: open a separate mirrored camera stream for the alignment preview ONLY.
-    // EyeTracker will open its own independent stream later (getUserMedia allows
-    // multiple simultaneous consumers of the same camera on modern browsers).
+    // Open a camera stream for alignment preview; EyeTracker opens its own stream later.
     (async () => {
       try {
         const previewConstraints = [
@@ -288,10 +185,10 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         alignVid.style.cssText = 'position:absolute;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);';
         document.getElementById('cam-stage').appendChild(alignVid);
         await new Promise(res => alignVid.addEventListener('loadeddata', res, {once:true}));
-        // Hide the "initialising…" overlay
+        // Hide the camera initialization overlay.
         const startScreen = document.getElementById('cam-start-screen');
         if (startScreen) startScreen.style.display = 'none';
-        // Now initialise MediaPipe face detection against this real video
+        // Initialize face alignment using the live preview video.
         if (typeof window._initFaceAlignment === 'function') {
           window._initFaceAlignment();
         }
@@ -300,7 +197,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
           proceedBtn.textContent = 'Lighting Good — Proceed to Calibration';
           proceedBtn.onclick = startVideoCal;
         }
-        // Stop the alignment stream once the user proceeds to calibration
+        // Release the alignment stream when calibration begins.
         window._stopAlignStream = () => {
           alignStream.getTracks().forEach(t => t.stop());
           alignVid.remove();
@@ -311,8 +208,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         if (typeof window.reportClientError === 'function') {
           window.reportClientError('camera permission/preview', e, 'navigator.mediaDevices.getUserMedia failed');
         }
-        // Do not proceed without a live stream: EyeTracker would request the
-        // same unavailable camera again and produce a less useful error.
+        // Require an available preview stream before offering calibration.
         const proceedBtn = document.getElementById('cam-proceed-btn');
         const tipsEl = document.getElementById('cam-tips');
         const statusText = document.getElementById('cam-status-text');
@@ -336,11 +232,11 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     })();
   }
 
+  /** Dismiss the camera check and show the video-calibration instructions. */
   async function startVideoCal() {
     try {
       if (typeof window.TestDiag === 'function') window.TestDiag('startVideoCal: stopping preview');
-      // Preserve the authorized preview stream for EyeTracker. Reopening the
-      // same camera immediately can fail with NotReadableError on Windows.
+      // Release the preview before starting EyeTracker.
       if (typeof window._stopCameraPreview === 'function') {
         await window._stopCameraPreview({ preserveStream: false });
       }
@@ -356,32 +252,18 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }
   }
 
+  /** Start eye-tracker calibration after stopping the alignment preview. */
   async function startClickCal() {
     if (typeof window.TestDiag === 'function') window.TestDiag('startClickCal begin');
     $('battery-intro').classList.add('protocol-started');
     $('video-cal-screen').style.display = 'none';
     $('camera-check-screen').style.display = 'none';
-    // FIX CAL-1: this used to also show #cal-screen (display:flex) and
-    // #cal-dot/#battery-container/#calibration-screen here, synchronously,
-    // before any of the async work below (camera teardown, EyeTracker
-    // startup, EyeTracker.calibrate()) had even started. eye-tracker.js v13
-    // owns its OWN calibration surface end-to-end — calUI() builds
-    // #nt-cal-root and explicitly hides #cal-screen/#cal-dot the moment it
-    // runs (see eye-tracker.js), but that doesn't happen until deep inside
-    // calibrate(), after the camera reopens and TensorFlow/FaceMesh finish
-    // loading — which can easily take a couple of seconds. In between,
-    // #cal-screen was sitting on screen showing just its bare "Eye Tracker
-    // Calibration" header with no dot and no progress pips (the pips are
-    // built by the pre-v13 calibration code, which v13 no longer uses) —
-    // exactly the "unused white calibration screen" flash. Not touching
-    // #cal-screen/#cal-dot/#battery-container/#calibration-screen at all
-    // here means nothing is shown until calUI() actually has something to
-    // show.
+    // EyeTracker owns the calibration interface; avoid showing legacy elements here.
     if (typeof window.TestDiag === 'function') window.TestDiag('calibration surfaces reset', {
       viewport: { width: window.innerWidth, height: window.innerHeight }
     });
 
-    // Request fullscreen while this handler still has the user's gesture.
+    // Request fullscreen during the user-initiated click handler.
     if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(err => {
         if (typeof window.TestDiag === 'function') window.TestDiag('Fullscreen request rejected during calibration', err);
@@ -389,8 +271,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       });
     }
 
-    // The camera-check FaceDetection runtime must be fully closed before
-    // FaceMesh/TF starts, otherwise both MediaPipe WASM modules collide.
+    // Close the camera-check detector before initializing FaceMesh.
     try {
       if (typeof window._stopCameraPreview === 'function') {
         await window._stopCameraPreview({ preserveStream: false });
@@ -401,7 +282,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
         if (typeof window.TestDiag === 'function') window.TestDiag('window._startEyeTrackerNow completed');
       }
 
-      // Always use the alignment-aware path so users complete alignment before the grid starts.
+      // Prefer the calibration flow that follows camera alignment.
       if (typeof EyeTracker !== 'undefined' && typeof EyeTracker.recalibrate === 'function') {
         await EyeTracker.recalibrate();
         if (typeof window.TestDiag === 'function') window.TestDiag('calibration setup visible; waiting for calibration start');
@@ -418,11 +299,13 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }
   }
 
+  /** Begin the first task after eye-tracker calibration completes. */
   function onCalibrationComplete() {
     showTaskTransition(0);
   }
 
-  // ── Task Transition ────────────────────────────────────────────────────────
+  // ── Task transitions ──────────────────────────────────────────────────────
+  /** Display task instructions and configure the button for the selected task. */
   function showTaskTransition(taskIdx) {
     currentTask = taskIdx;
     const tt = $('task-transition');
@@ -485,6 +368,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   // ══════════════════════════════════════════════════════════════════════════
   // TASK 1: SPEM WITH PRE-TRIAL
   // ══════════════════════════════════════════════════════════════════════════
+  /** Initialize the SPEM practice trial and countdown. */
   function startSPEM() {
     spemDataLog = []; 
     spemCurrentTaskIndex = 0; 
@@ -504,6 +388,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }, 2000);
   }
 
+  /** Show the SPEM start countdown before preparing a trial. */
   function spemRunCountdown(n) {
     const ot = $('spem-overlay-text');
     ot.style.display = 'block';
@@ -511,6 +396,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     else { ot.style.display = 'none'; spemPrepareTask(); }
   }
 
+  /** Prepare the next practice or clinical pursuit sequence. */
   function spemPrepareTask() {
     if (!spemIsTrial && spemCurrentTaskIndex >= spemTestSequence.length) { finishSPEM(); return; }
 
@@ -541,6 +427,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }, SPEM_FIXATION_DELAY_MS);
   }
 
+  /** Animate the SPEM target and collect gaze samples for the sequence. */
   function spemStartMovingTask() {
     spemIsTrackingActive = true; 
     spemTaskStartTime = performance.now();
@@ -558,6 +445,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       }
     });
 
+    /** Animate the sinusoidal target: x = cx + Ax·sin(2πft); Lissajous y uses 2f. */
     function animate() {
       const elapsed = (performance.now()-spemTaskStartTime)/1000;
       if (elapsed < dur) {
@@ -572,6 +460,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     animate();
   }
 
+  /** End the current SPEM trial and advance to the next phase. */
   function spemEndMovingTask() {
     spemIsTrackingActive = false; 
     cancelAnimationFrame(spemAnimFrameId);
@@ -602,6 +491,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }
   }
 
+  /** Export the SPEM sample log and transition to the next task. */
   function finishSPEM() {
     const ot = $('spem-overlay-text'); ot.textContent = 'Generating report…'; ot.style.fontSize = '2.5rem'; ot.style.display = 'block';
     const csvLines = ['Timestamp,TaskPhase,TargetX,TargetY,EyeX,EyeY'];
@@ -616,6 +506,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   // ══════════════════════════════════════════════════════════════════════════
   // TASK 2: SCHIZOEYE
   // ══════════════════════════════════════════════════════════════════════════
+  /** Run the fixation and antisaccade protocols and collect gaze samples. */
   async function startSZ() {
     szFixT = []; szAntiT = []; szCsv = [];
     const cv = $('sz-stage'); cv.width = innerWidth; cv.height = innerHeight;
@@ -631,8 +522,6 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       if (cond==='single') { const a=Math.random()*Math.PI*2, r=d2p(10); ds.push({x:W/2+Math.cos(a)*r, y:H/2+Math.sin(a)*r}); }
       else if (cond==='multi') { for (let i=0;i<4;i++) { const a=(i/4)*Math.PI*2, r=d2p(8+Math.random()*5); ds.push({x:W/2+Math.cos(a)*r, y:H/2+Math.sin(a)*r, ph:i*(Math.PI/2)}); } }
       const t0 = performance.now();
-      // FIX BC-MATH-11: gaze sampling is now a push subscription, decoupled
-      // from the render loop below — see SzTracker definition above.
       SzTracker.subscribe(({x,y}) => {
         trial.pts.push({dx:x-W/2, dy:y-H/2});
         const ts=(performance.now()-szTaskStartTime).toFixed(2);
@@ -670,7 +559,6 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       cx.restore();
       await wait(800+Math.random()*600);
       const antiT0 = performance.now();
-      // FIX BC-MATH-11: push subscription, same as the fixation phase above.
       SzTracker.subscribe(({x,y}) => {
         trial.pts.push({normX:(x-W/2)*side/Math.max(Math.abs(tx),1), t:performance.now()-antiT0});
         const ts=(performance.now()-szTaskStartTime).toFixed(2);
@@ -695,8 +583,10 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
   
 
+  /** Draw a filled circle on the SchizoEye task canvas. */
   function szDot(cx, x, y, r, c) { cx.fillStyle=c; cx.beginPath(); cx.arc(x,y,r,0,Math.PI*2); cx.fill(); }
 
+  /** Show task instructions and resume when the participant continues. */
   function szInstr(title, body) {
     return new Promise(res => {
       $('sz-stage').style.display = 'none';
@@ -715,6 +605,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   // ══════════════════════════════════════════════════════════════════════════
   // TASK 3: FREE VIEWING
   // ══════════════════════════════════════════════════════════════════════════
+  /** Load the free-viewing image set and record unavailable files. */
   function loadFVImages() {
     fvImages = []; fvImageLoadErrors = []; let loadedCount = 0;
     for (let i = 1; i <= FV_NUM_IMAGES; i++) {
@@ -726,14 +617,15 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   }
   
 
-  // ── Global Scope Variables for Report Generation ──
+  // ── Report state ──────────────────────────────────────────────────────────
   let _lastFeatures = {};
-  let _lastDataQuality = {}; // FIX BC-MATH-10: which features (if any) fell back to a no-data placeholder
+  let _lastDataQuality = {};
   let _lastResult = null;
   let _lastPrediction = null;
-  let _lastClassProbabilities = null; // FIX PDF-1: needed to fill in healthy/schizophrenia % on the flattened-prediction fallback path
-  let _lastFvRaw = []; // NEW
+  let _lastClassProbabilities = null;
+  let _lastFvRaw = [];
 
+  /** Convert a Plotly graph to a PNG data URL for the PDF report. */
   async function getPlotlyImage(divId) {
     try {
         const el = document.getElementById(divId);
@@ -744,6 +636,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }
   }
 
+  /** Generate and download a PDF report from the current session data. */
   async function downloadPDFReport() {
     const btn = document.getElementById('btn-dl-pdf');
     const oldText = btn.textContent;
@@ -751,14 +644,14 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     btn.disabled = true;
 
     try {
-        // Collect canvas elements
+        // Capture current canvas and graph images for the report payload.
         const fixPureCanvas = document.getElementById('cFP');
         const fixDistCanvas = document.getElementById('cFD');
         const hs4Img = await getPlotlyImage('spem-graph-Horizontal_0.4Hz');
         const ls2Img = await getPlotlyImage('spem-graph-Lissajous_0.2Hz');
         const ls4Img = await getPlotlyImage('spem-graph-Lissajous_0.4Hz');
 
-        // Create Payload mimicking PDF structure
+        // Build the payload expected by the report endpoint.
         const payload = {
             patient: {
               id: subjectId,
@@ -772,7 +665,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
               return val ? parseFloat(val) : (panssScore ? parseFloat(panssScore) : null);
             })(),
             metrics: _lastFeatures,
-            prediction: _buildPredictionForReport(), // FIX PDF-1
+            prediction: _buildPredictionForReport(),
             images: {
                 heatmap: "",
                 spem_hs4: hs4Img,
@@ -810,6 +703,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }
   }
 
+  /** Update image-loading progress and enable the task when enough images load. */
   function updateFVLoadStatus(loadedCount) {
     const successCount = fvImages.filter(img => img && img.loaded).length;
     const imgStatus = $('image-status');
@@ -827,6 +721,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }
   }
 
+  /** Reset the free-viewing collector and begin the image sequence. */
   function startFreeViewing() {
     if (typeof window.TestDiag === 'function') window.TestDiag('Task 3 Free Viewing started');
     $('fv-experiment-screen').style.display = 'flex';
@@ -836,6 +731,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     showNextFVImage();
   }
 
+  /** Show the fixation cross, then present and record the next image. */
   function showNextFVImage() {
     if (fvCurrentImageIndex >= FV_NUM_IMAGES) { finishFreeViewing(); return; }
 
@@ -875,6 +771,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     }, FV_CROSSHAIR_DURATION);
   }
 
+  /** Stop free-viewing timers and proceed to the combined results screen. */
   function finishFreeViewing() {
     $('fv-experiment-screen').style.display = 'none';
     showAllResults(); // Finishes the battery
@@ -883,6 +780,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
   // ══════════════════════════════════════════════════════════════════════════
   // UNIFIED RESULTS
   // ══════════════════════════════════════════════════════════════════════════
+  /** Display task results and start feature extraction and classification. */
   function showAllResults() {
     $('results-screen').style.display = 'block';
     document.body.style.overflow = 'auto';
@@ -897,6 +795,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     setTimeout(runAIClassification, 300);
   }
 
+  /** Render per-image and total free-viewing sample counts. */
   function renderFVResults() {
     const allImageData = RawGazeCollector.getAllImageData();
     const totalSamples = allImageData.reduce((sum,img) => sum + img.sampleCount, 0);
@@ -905,13 +804,14 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     tbody.innerHTML += `<tr style="border-top:3px solid var(--accent);"><td style="color:var(--accent); font-weight:bold;">TOTAL</td><td style="color:var(--accent); font-weight:bold;">${totalSamples}</td></tr>`;
   }
 
+  /** Plot target and eye position and velocity for each SPEM sequence. */
   function renderSPEMResults() {
     const now = new Date();
     const ts = now.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) + '  ·  ' + now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
     $('spem-report-meta').textContent = `Subject: ${subjectId}  ·  ${ts}`;
     const container = $('spem-graphs-container'); container.innerHTML = '';
 
-    // NEW DARK THEME COLOR SCHEME
+    // Plot and canvas colors.
     const P = { 
       paper:'#1a1a2e', plot:'#1a1a2e', grid:'#2a2b3d', zero:'#44465e', 
       tick:'#8a8d9e', label:'#ffffff', title:'#ffffff', 
@@ -926,6 +826,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       const bias = rawEyeX.reduce((s,v,i)=>s+(v-targetX[i]),0)/rawEyeX.length;
       const eyeX = rawEyeX.map(v=>v-bias);
 
+      /** Apply a centered moving-average smoothing window. */
       function smoothData(data, w) { return data.map((_,i) => { const s=Math.max(0,i-Math.floor(w/2)), e=Math.min(data.length,i+Math.floor(w/2)+1); let sum=0; for(let j=s;j<e;j++) sum+=data[j]; return sum/(e-s); }); }
       const smEyeX = smoothData(eyeX, 7);
       const saccadeT=[], saccadeX=[], timeVel=[], eyeVel=[], targetVel=[], validGains=[];
@@ -963,6 +864,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     });
   }
 
+  /** Render SchizoEye gaze plots, metrics, and clinical flags. */
   function renderSZResults() {
     $('sz-rmeta').textContent = `Subject: ${subjectId}   ·   ${new Date().toLocaleString()}`;
     const f = szFix(), a = szAnti();
@@ -981,6 +883,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     szAntiMetrics(a); szWaterfall(a); szFlags(f, a);
   }
 
+  /** Draw gaze samples and eccentricity reference rings on a canvas. */
   function szScatter(id, pts) {
     const el=$(id); const dpr=devicePixelRatio||1; const W=el.offsetWidth, H=200;
     el.width=W*dpr; el.height=H*dpr; const ctx=el.getContext('2d'); ctx.scale(dpr,dpr);
@@ -1016,6 +919,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     ctx.fillStyle='rgba(255,255,255,.7)'; ctx.font='10px Share Tech Mono'; ctx.textAlign='left'; ctx.fillText(`${pts.length} samples`,6,H-6);
   }
 
+  /** Render the antisaccade trial outcome waterfall. */
   function szWaterfall(a) {
     const el=$('cA'); const dpr=devicePixelRatio||1; const W=el.offsetWidth, H=240;
     el.width=W*dpr; el.height=H*dpr; const ctx=el.getContext('2d'); ctx.scale(dpr,dpr);
@@ -1041,6 +945,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     });
   }
 
+  /** Summarize gaze stability for fixation trials. */
   function szFix() {
     const pure=szFixT.filter(t=>t.cond==='none').flatMap(t=>t.pts);
     const dist=szFixT.filter(t=>t.cond!=='none').flatMap(t=>t.pts);
@@ -1048,6 +953,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     return {pure, dist, rP, rD, ratio};
   }
 
+  /** Summarize performance across antisaccade trials. */
   function szAnti() {
     let errs=0, corr=0; const lats=[];
     const cl=szAntiT.map(t => {
@@ -1064,11 +970,13 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     return {errs, corr, unc:errs-corr, rate:szAntiT.length?errs/szAntiT.length:0, lat:mean(lats), lats, cl};
   }
 
+  /** Render one SchizoEye metric card with its normative range. */
   function szMc(lbl,val,norm,unit,c) {
     const pct=Math.min(100,parseFloat(val)/parseFloat(norm)*100), fc=c==='ok'?'var(--accent)':'var(--dim)';
     return `<div class="mc"><div class="ml">${lbl}</div><div class="mv ${c}">${val}${unit}</div><div class="mn">norm &lt; ${norm}${unit}</div><div class="mb"><div class="mf" style="width:${pct}%;background:${fc}"></div></div></div>`;
   }
 
+  /** Render the SchizoEye summary from fixation and antisaccade metrics. */
   function szSummary(f,a) {
     // Convert gaze spread to degrees for summary display
     const rPDeg = f.rP / pxPerDeg;
@@ -1081,6 +989,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     $('sz-sbar').innerHTML = items.map(([l,v,c]) => `<div class="sc"><div class="sc-icon">${c==='ok'?'✓':'⚠'}</div><div><div class="sc-lbl">${l}</div><div class="sc-val ${c}">${v}</div></div></div>`).join('');
   }
 
+  /** Render numeric fixation-stability metrics. */
   function szFixMetrics(f) {
     // Convert pixel RMS values to degrees using pxPerDeg factor
     const rPDeg = f.rP / pxPerDeg;
@@ -1092,6 +1001,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       szMc('Distractibility Ratio',f.ratio.toFixed(2),szN.ratio,'×',cls(f.ratio,szN.ratio,szN.ratio*1.5));
   }
 
+  /** Render numeric antisaccade metrics. */
   function szAntiMetrics(a) {
     // Error Rate    = errs / total trials
     // Self-Corrected = corr (subset of errors where the subject recovered to the correct side)
@@ -1102,6 +1012,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
       szMc('Self-Corrected Errors',a.corr,2,'/10',cls(a.corr,2,4));
   }
 
+  /** Render clinical interpretation flags from task metrics. */
   function szFlags(f, a) {
     const fgs=[]; const add=(lvl,main,sub)=>fgs.push({lvl,main,sub});
     
@@ -1124,6 +1035,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     $('sz-flags').innerHTML = `<h3>Clinical Interpretation</h3><div class="fg"><div class="fi" style="color:${sc};">${nAlert>=2?'⚠':fgs.length?'△':'✓'}</div><div><div class="fm" style="color:${sc}">${sm}</div></div></div>` + fgs.map(f=>`<div class="fg"><div class="fi" style="color:var(--accent)">${f.lvl==='alert'?'⚠':'△'}</div><div><div class="fm" style="color:var(--accent)">${f.main}</div><div class="fs">${f.sub}</div></div></div>`).join('');
   }
 
+  /** Download the raw free-viewing gaze samples as CSV. */
   function downloadFVCSV() {
     const allImageData = RawGazeCollector.getAllImageData();
     let csv = 'image_index,image_name,x,y,timestamp_ms,velocity,is_blink,confidence,frame_number\n';
@@ -1131,20 +1043,23 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     dlBlob(csv, `fv_gaze_raw_${Date.now()}.csv`);
   }
 
+  /** Download the SPEM gaze samples as CSV. */
   function downloadSPEMCSV() { dlBlob(spemGlobalCSVContent, `spem_${subjectId.replace(/[^a-z0-9]/gi,'_')}_${Date.now()}.csv`); }
 
+  /** Download the SchizoEye gaze samples as CSV. */
   function downloadSZCSV() {
     const content = 'Timestamp_ms,Phase,Gaze_X,Gaze_Y,Target_X,Target_Y\n' + szCsv.join('\n');
     dlBlob(content, `sz_${subjectId}_${Date.now()}.csv`);
   }
 
-  // Increased stagger time slightly to ensure browsers don't block multiple rapid downloads
+  /** Download all task CSV files with a short delay between downloads. */
   function downloadAllCSV() { 
     downloadFVCSV(); 
     setTimeout(downloadSPEMCSV, 600); 
     setTimeout(downloadSZCSV, 1200); 
   }
 
+  /** Download each available SPEM graph as a PNG image. */
   function downloadSPEMPlots() {
     spemTestSequence.forEach(task => {
       const divId = `spem-graph-${task.id}`;
@@ -1152,6 +1067,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
     });
   }
 
+  /** Trigger a browser download from text content. */
   function dlBlob(content, filename) {
     const blob = new Blob([content], {type:'text/csv;charset=utf-8;'});
     const url = URL.createObjectURL(blob);
@@ -1161,7 +1077,7 @@ console.log(`[Calibration] pxPerDeg = ${pxPerDeg.toFixed(2)}  (diagonal: ${scree
 
 
   // ════════════════════════════════════════════════════════════════
-  // FEATURE EXTRACTOR — pure-JS port (clashing helpers prefixed _ft_)
+  // ── Feature extraction ────────────────────────────────────────────────────
   // ════════════════════════════════════════════════════════════════
   const FEATURE_ORDER = [
   "fv_fnum_mean",
@@ -1245,7 +1161,7 @@ const BOUNDS = {
   "HS4_SacNum":        { lower: 0.0,  upper: 120.0  },
   "HS4_SacDur":        { lower: 8.0,  upper: 100.0  },
  
-"HS4_Mean_H_RMSE":   { lower: 0.5,   upper: 12.0  },  // FIX BC-MATH-2: was 0.5-5.0 and saturating on real data (see audit — the one available reference session hit this exact ceiling on all 5 RMSE features); webcam gaze-estimation noise alone is commonly 1-3 deg RMS, so a 5 deg ceiling clips legitimate noisy trials rather than only broken ones
+"HS4_Mean_H_RMSE": { lower: 0.5,   upper: 12.0  },
   // SPEM — spatial in DEGREES
   "HS4_SacAmp":        { lower: 0.3,  upper: 15.0   },  // (°)
   "HS4_SacPV":         { lower: 20.0, upper: 500.0  },  // (°/s)
@@ -1255,12 +1171,12 @@ const BOUNDS = {
   "LS2_Mean_H_gain":   { lower: 0.4,  upper: 1.3   },
   "LS2_Mean_V_logSNR": { lower: 0.2,  upper: 3.5   },
   "LS2_Mean_V_gain":   { lower: 0.4,  upper: 1.3   },
-  "LS2_FixNum":        { lower: 0.0,  upper: 80.0   },  // FIX BC-MATH-3: was 3.0 — inconsistent with HS4's 0.0 floor for the exact same kind of count; 0 fixations is a legitimate (if poor) outcome, not an impossible one
+  "LS2_FixNum":        { lower: 0.0,  upper: 80.0   },
   "LS2_FixDur":        { lower: 80.0, upper: 1000.0 },
-  "LS2_SacNum":        { lower: 0.0,  upper: 80.0   },  // FIX BC-MATH-3
+  "LS2_SacNum":        { lower: 0.0,  upper: 80.0   },
   "LS2_SacDur":        { lower: 8.0,  upper: 60.0   },
-"LS2_Mean_H_RMSE":   { lower: 0.5,   upper: 10.0  },  // FIX BC-MATH-2 (see HS4_Mean_H_RMSE)
- "LS2_Mean_V_RMSE":   { lower: 0.5,   upper: 10.0  },  // FIX BC-MATH-2
+"LS2_Mean_H_RMSE":   { lower: 0.5,   upper: 10.0  },
+ "LS2_Mean_V_RMSE":   { lower: 0.5,   upper: 10.0  },
   // LS2 — spatial in DEGREES
   "LS2_SacAmp":        { lower: 0.3,  upper: 8.0    },
   "LS2_SacPV":         { lower: 20.0, upper: 300.0  },
@@ -1270,25 +1186,25 @@ const BOUNDS = {
   "LS4_Mean_H_gain":   { lower: 0.2,  upper: 1.5   },
   "LS4_Mean_V_logSNR": { lower: 0.2,  upper: 3.5   },
   "LS4_Mean_V_gain":   { lower: 0.2,  upper: 1.5   },
-  "LS4_FixNum":        { lower: 0.0,  upper: 100.0  },  // FIX BC-MATH-3
+  "LS4_FixNum":        { lower: 0.0,  upper: 100.0  },
   "LS4_FixDur":        { lower: 80.0, upper: 800.0  },
-  "LS4_SacNum":        { lower: 0.0,  upper: 100.0  },  // FIX BC-MATH-3
+  "LS4_SacNum":        { lower: 0.0,  upper: 100.0  },
   "LS4_SacDur":        { lower: 8.0,  upper: 80.0   },
- "LS4_Mean_H_RMSE":   { lower: 0.5,   upper: 12.0  },  // FIX BC-MATH-2
- "LS4_Mean_V_RMSE":   { lower: 0.5,   upper: 12.0  },  // FIX BC-MATH-2
+ "LS4_Mean_H_RMSE":   { lower: 0.5,   upper: 12.0  },
+ "LS4_Mean_V_RMSE":   { lower: 0.5,   upper: 12.0  },
   // LS4 — spatial in DEGREES
   "LS4_SacAmp":        { lower: 0.3,  upper: 10.0   },
   "LS4_SacPV":         { lower: 20.0, upper: 400.0  },
   "LS4_SacAV":         { lower: 10.0, upper: 150.0  },
   // Fixation stability — counts and durations
   "fix_fs_fn":  { lower: 0.0,  upper: 25.0    },
-"fix_fs_fd":  { lower: 100.0, upper: 5000.0 },  // was 100-10000
+"fix_fs_fd":  { lower: 100.0, upper: 5000.0 },
   "fix_fs_sn":  { lower: 0.0,  upper: 25.0    },
   "fix_fs_spl": { lower: 0.0,  upper: 600.0   },  // cumulative scanpath (°)
   "fix_fs_sa":  { lower: 0.0,  upper: 6.0     },  // saccade amplitude (°)
   // Fixation distractor — counts and durations
   "fix_fd_fn":  { lower: 0.0,  upper: 30.0    },
-"fix_fd_fd":  { lower: 100.0, upper: 5000.0 },  // was 100-10000
+"fix_fd_fd":  { lower: 100.0, upper: 5000.0 },
   "fix_fd_sn":  { lower: 0.0,  upper: 30.0    },
   "fix_fd_spl": { lower: 0.0,  upper: 500.0   },  // cumulative scanpath (°)
   "fix_fd_sa":  { lower: 0.0,  upper: 6.0     },  // saccade amplitude (°)
@@ -1296,9 +1212,10 @@ const BOUNDS = {
   "antisaccade_error_rate":            { lower: 0.0,   upper: 1.0   },
   "antisaccade_correction_error_rate": { lower: 0.0,   upper: 1.0   },
   "antisaccade_latency":               { lower: 100.0, upper: 900.0 },
-  "antisaccade_accuracy":              { lower: 0.0,   upper: 1.0   },  // FIX BC-MATH-4: was capped at 0.99 — a participant who lands correctly on all 10 trials has 100% accuracy; the old cap silently rewrote a genuinely perfect score into "one trial short of perfect" (confirmed against the one real reference session: error_rate=0.30 with correction_error_rate=0% implies true accuracy=1.00, which the old bound clamped to 0.99)
+  "antisaccade_accuracy":              { lower: 0.0,   upper: 1.0   },
 };
-//changed
+
+// Extraction thresholds, task parameters, and feature scaling values.
 const CONFIG = {
   fv: {
     dispersionThresholdDeg: 2.0,
@@ -1329,19 +1246,19 @@ const CONFIG = {
     minFixMs: 60,
     phaseConfig: {
       'Horizontal_0.4Hz': {
-  residualDispersionThresholdDeg: 1.0,   // was 2.5 — too loose, merge too many points
+  residualDispersionThresholdDeg: 1.0,
   ampDegPerUnit:       1.0,
   peakVelocityScale:   1.0 ,
   avgVelocityScale:    1.0 ,
 },
 'Lissajous_0.2Hz': {
-  residualDispersionThresholdDeg: 0.8,   // was 1.5
+  residualDispersionThresholdDeg: 0.8,
   ampDegPerUnit:       1.0,
   peakVelocityScale:   1.0 ,
   avgVelocityScale:    1.0 ,
 },
 'Lissajous_0.4Hz': {
-  residualDispersionThresholdDeg: 2.0,   // was 5.0 — way too loose
+  residualDispersionThresholdDeg: 2.0,
   ampDegPerUnit:       1.0,
   peakVelocityScale:   1.0 ,
   avgVelocityScale:    1.0 ,
@@ -1350,62 +1267,15 @@ const CONFIG = {
   },
   antisaccade: {
     trialGapMs:                 700,
-    // FIX BC-MATH-5: was 15.0 deg/s. The antisaccade literature consistently
-    // uses ~30 deg/s for onset detection (Gitelman 2002, widely cited; see
-    // also ScienceDirect's Antisaccade overview using the same figure), with
-    // some studies as low as 20 or as high as 40. 15 deg/s is below every
-    // value we found in the literature and is exactly the range where
-    // webcam positional jitter alone can cross threshold on a single frame.
     velocityThresholdDegPerSec: 30.0,
-    // New: minimum sustained duration and net amplitude before a threshold
-    // crossing counts as a real saccade, not a noise spike — analogous to
-    // the same guards added to detectEventsEK() and standard in the
-    // literature (e.g. minimum amplitude/velocity/latency criteria in
-    // Karatekin & Asarnow-style antisaccade scoring; PLOS ONE 2011 used a
-    // 1.5 deg minimum saccade length with a 40 deg/s threshold).
+    // Reject brief or low-amplitude threshold crossings as likely noise.
     minSaccadeDurationMs:        20,
     minSaccadeAmplitudeDeg:      1.0,
-    // New: saccades detected faster than this are anticipatory/artifactual
-    // and are excluded from the LATENCY estimate specifically (error/
-    // direction classification still uses them) — standard practice, e.g.
-    // PLOS ONE (2011): "SRTs shorter than 80 ms were considered anticipatory
-    // and discarded."
+    // Exclude anticipatory responses from the latency metric.
     anticipatoryLatencyMs:       80,
     landingToleranceDeg:         5,
   },
-  // Shared adaptive event-detection parameters (see detectEventsEK).
-  // FIX BC-MATH-13: this needed two iterations to get right, and both are
-  // worth recording so the next round of tuning doesn't repeat them.
-  //   Attempt 1 was lambda=4 with minThresholdDegPerSec=15,
-  //   maxThresholdDegPerSec=80 -- reasoning: real webcam noise is much
-  //   higher than the infrared-tracker noise the original lambda=6 was
-  //   calibrated against (Engbert & Kliegl 2003), so lower lambda + a
-  //   ceiling should let genuine saccades through even on noisy sessions.
-  //   Tested against a real post-fix session this reasoning was based on
-  //   (HS4/LS2/LS4 SacNum 0-1 across three 20s trials, fv_fnum_mean
-  //   pinned at its floor, fix_fs/fd_fd pinned at their ceiling -- i.e.
-  //   near-total non-detection almost everywhere the adaptive detector
-  //   runs). That attempt made detection WORSE, not better: simulating a
-  //   realistic short (20-35ms) 1-2deg microsaccade at ~35Hz showed its
-  //   own SMOOTHED (+/-2-sample) velocity typically lands only ~8-16
-  //   deg/s -- BELOW the 15 deg/s floor -- so the floor itself was
-  //   silently discarding genuine small saccades before the noise-based
-  //   ceiling ever came into play. The ceiling of 80 was also too high to
-  //   matter: fixing the real session's under-detection only needed the
-  //   threshold capped somewhere well under the ~8-16 deg/s a genuine
-  //   short saccade's smoothed velocity actually reaches, not 80.
-  //   Attempt 2 (current values) was calibrated by simulating both small
-  //   (1-2deg, fixation/microsaccade-scale) and large (4-6deg, SPEM
-  //   catch-up-scale) saccades against synthetic noise swept from clean
-  //   (0.05deg SD) to quite poor (1.5deg SD) tracking, and choosing the
-  //   lambda/floor/ceiling combination that recovered close to the true
-  //   injected count across that whole range without either
-  //   under-detecting at realistic noise levels or exploding into false
-  //   positives at high noise. lambda=3 (not 4 or 6), floor=3 (not 15),
-  //   ceiling=25 (not 80) was the best-performing combination tested.
-  // This is still simulated-noise calibration, not real-recording
-  // calibration -- see VALIDATION notes; re-tune here in one place if
-  // real sessions show it still needs adjustment either direction.
+  // Shared parameters for the adaptive velocity-threshold event detector.
   eventDetection: {
     lambda: 3,
     minSaccadeDurationMs: 20,
@@ -1414,29 +1284,13 @@ const CONFIG = {
     maxThresholdDegPerSec: 25,
   },
 };
-// FIX BC-MATH-6 (IMPORTANT): the app was placing stimuli at real visual
-// angles during the session using the LIVE, per-session `pxPerDeg` (derived
-// from the participant's actual screen-diagonal input — see the pxPerDeg
-// calibration block near the top of this file), but every post-hoc feature
-// extraction below was re-converting those same recorded pixel coordinates
-// back to degrees using a hardcoded REFERENCE_PPD=37.0 regardless of the
-// session's real value. For any session where the real screen differs from
-// the "15.6-inch at 60cm" assumption baked into that 37, every degree-based
-// feature (amplitudes, velocities, RMSE, dispersion, scanpath length) would
-// be systematically scaled by (true_pxPerDeg / 37) — e.g. a larger monitor
-// or different viewing distance would silently inflate or deflate reported
-// degrees session-to-session, which is exactly the kind of hidden nuisance
-// variable that can masquerade as a real HC/SZ signal in downstream ML.
-//
-// Extraction runs in the SAME page load immediately after recording (see
-// runAIClassification below), so the correct, already-computed live
-// `pxPerDeg` for this session is available and is now used by default.
-// LEGACY_REFERENCE_PPD is kept only as an explicit fallback for offline
-// re-analysis of historical CSVs that don't carry a recorded pxPerDeg.
+// Used only when re-analyzing historical data without a session-specific scale.
 const LEGACY_REFERENCE_PPD = 37.0;
+/** Convert pixels to degrees: degrees = pixels / pixelsPerDegree. */
 function px2deg(px, ppd) { return px / (Number.isFinite(ppd) && ppd > 0 ? ppd : pxPerDeg); }
 
 
+/** Normalize free-viewing rows and add time and visual-angle coordinates. */
   function normalizeFv(rows, referencePpd) {
     const ppd = Number.isFinite(referencePpd) && referencePpd > 0 ? referencePpd : pxPerDeg;
   return cloneRows(rows)
@@ -1457,6 +1311,7 @@ function px2deg(px, ppd) { return px / (Number.isFinite(ppd) && ppd > 0 ? ppd : 
     .sort((a, b) => a.image_index - b.image_index || a.tMs - b.tMs);
 }
 
+/** Normalize SPEM rows and add time and visual-angle coordinates. */
 function normalizeSpem(rows, referencePpd) {
   const ppd = Number.isFinite(referencePpd) && referencePpd > 0 ? referencePpd : pxPerDeg;
   return cloneRows(rows)
@@ -1477,6 +1332,7 @@ function normalizeSpem(rows, referencePpd) {
     .sort((a, b) => a.tSec - b.tSec);
 }
 
+/** Normalize SchizoEye rows and add time and visual-angle coordinates. */
 function normalizeSz(rows, referencePpd) {
   const ppd = Number.isFinite(referencePpd) && referencePpd > 0 ? referencePpd : pxPerDeg;
   return cloneRows(rows)
@@ -1497,6 +1353,7 @@ function normalizeSz(rows, referencePpd) {
     .sort((a, b) => a.tMs - b.tMs);
 }
 
+/** Group records by the value of a selected field. */
 function groupBy(rows, key) {
   const map = new Map();
   for (const row of rows) {
@@ -1507,6 +1364,7 @@ function groupBy(rows, key) {
   return map;
 }
 
+/** Calculate the arithmetic mean of feature values. */
 function _ft_mean(arr) {
   if (!arr || arr.length === 0) return NaN;
   let sum = 0;
@@ -1514,6 +1372,7 @@ function _ft_mean(arr) {
   return sum / arr.length;
 }
 
+/** Calculate the median of feature values. */
 function _ft_median(arr) {
   if (!arr || arr.length === 0) return NaN;
   const sorted = [...arr].sort((a, b) => a - b);
@@ -1522,6 +1381,7 @@ function _ft_median(arr) {
   return 0.5 * (sorted[mid - 1] + sorted[mid]);
 }
 
+/** Sum feature values. */
 function _ft_sum(arr) {
   if (!arr || arr.length === 0) return 0;
   let s = 0;
@@ -1529,6 +1389,7 @@ function _ft_sum(arr) {
   return s;
 }
 
+/** Calculate population variance: mean squared deviation from the mean. */
 function _ft_variance(arr) {
   if (!arr || arr.length === 0) return NaN;
   const m = _ft_mean(arr);
@@ -1540,10 +1401,12 @@ function _ft_variance(arr) {
   return s / arr.length;
 }
 
+/** Return unique values while preserving their first-seen order. */
 function _ft_unique(arr) {
   return [...new Set(arr)];
 }
 
+/** Return the most frequent value in an array. */
 function _ft_mode(arr) {
   if (!arr || arr.length === 0) return NaN;
   const counts = new Map();
@@ -1562,6 +1425,7 @@ function _ft_mode(arr) {
   return Number(bestKey);
 }
 
+/** Find the minimum and maximum field values within an inclusive row range. */
 function rangeOfRows(rows, startIdx, endIdx, key) {
   let minVal = Infinity;
   let maxVal = -Infinity;
@@ -1573,6 +1437,10 @@ function rangeOfRows(rows, startIdx, endIdx, key) {
   return { min: minVal, max: maxVal };
 }
 
+/**
+ * Detect fixations using the I-DT dispersion-threshold algorithm.
+ * Formula: dispersion = (maxX - minX) + (maxY - minY).
+ */
 function idtFixations(rows, xKey, yKey, tMsKey, dispersionThresholdPx, minFixMs) {
   const sorted = [...rows].sort((a, b) => a[tMsKey] - b[tMsKey]);
   const fixations = [];
@@ -1584,6 +1452,8 @@ function idtFixations(rows, xKey, yKey, tMsKey, dispersionThresholdPx, minFixMs)
     }
     if (j >= sorted.length) break;
 
+    /** Calculate I-DT dispersion as the sum of horizontal and vertical ranges. */
+    /** Calculate dispersion as the sum of horizontal and vertical ranges. */
     const dispersion = (a, b) => {
       const xr = rangeOfRows(sorted, a, b, xKey);
       const yr = rangeOfRows(sorted, a, b, yKey);
@@ -1612,6 +1482,10 @@ function idtFixations(rows, xKey, yKey, tMsKey, dispersionThresholdPx, minFixMs)
   return { fixations, rows: sorted };
 }
 
+/**
+ * Detect pursuit fixations using I-DT on gaze-to-target residuals.
+ * I-DT dispersion is the sum of the horizontal and vertical value ranges.
+ */
 function idtResidualFixations(rows, tMsKey, residualXKey, residualYKey, dispersionThresholdPx, minFixMs) {
   const sorted = [...rows].sort((a, b) => a[tMsKey] - b[tMsKey]);
   const fixations = [];
@@ -1623,6 +1497,8 @@ function idtResidualFixations(rows, tMsKey, residualXKey, residualYKey, dispersi
     }
     if (j >= sorted.length) break;
 
+    /** Calculate residual dispersion as the sum of axis ranges. */
+    /** Calculate residual dispersion as the sum of axis ranges. */
     const dispersion = (a, b) => {
       const xr = rangeOfRows(sorted, a, b, residualXKey);
       const yr = rangeOfRows(sorted, a, b, residualYKey);
@@ -1651,46 +1527,11 @@ function idtResidualFixations(rows, tMsKey, residualXKey, residualYKey, dispersi
   return { fixations, rows: sorted };
 }
 
-// ════════════════════════════════════════════════════════════════
-// FIX BC-MATH-1: Adaptive velocity-threshold event detector.
-// ────────────────────────────────────────────────────────────────
-// Replaces the fixed dispersion-threshold (I-DT) detector above for all
-// live extraction call sites. I-DT with a single fixed pixel/degree
-// threshold is known to be brittle when noise level varies session to
-// session (exactly what we found: this app's effective sampling rate
-// and tracking noise both vary 2-3x between sessions/hardware) — see
-// Nyström & Holmqvist (2010), Behav Res Methods 42:188-204, and
-// Salvucci & Goldberg (2000) ETRA taxonomy.
-//
-// This detector instead follows Engbert & Kliegl (2003, Vision Research
-// 43:1035-1045) and Engbert & Mergenthaler (2006, PNAS): eye velocity is
-// smoothed with a short central-difference window, a per-session/per-
-// phase NOISE-ADAPTIVE threshold is computed from the median-based SD of
-// that velocity distribution (formula #2 in the original paper — robust
-// to the very outliers/saccades it's trying to detect), and a sample is
-// flagged as saccadic when it exceeds an elliptical 2D threshold
-// (lambda x SD in each axis). On top of the core EK criterion we add the
-// two extra guards that the low-rate/noisy-webcam literature consistently
-// recommends (e.g. Nyström & Holmqvist 2010; standard practice reviewed
-// in Hessels et al. 2018): a MINIMUM SUSTAINED DURATION (translated from
-// ms into a sample-count using this segment's own median inter-sample
-// interval, since our effective rate varies ~20-60 Hz across sessions)
-// and a MINIMUM NET AMPLITUDE, so an isolated noisy sample can't be
-// misclassified as a saccade. Candidate saccade runs failing either
-// guard are folded back into the surrounding fixation.
-//
-// `detectXKey`/`detectYKey` is the signal used for velocity/threshold
-// classification; `measureXKey`/`measureYKey` is the signal used to
-// report fixation centres and saccade amplitude/velocity/path length.
-// For plain fixation tasks these are the same (raw gaze position). For
-// smooth pursuit we classify on the RESIDUAL (gaze - target) so that the
-// expected pursuit motion itself is never mistaken for a saccade, while
-// still reporting saccade kinematics from the raw eye trajectory — this
-// mirrors standard pursuit analysis practice (e.g. the eye-velocity-
-// relative-to-target criterion in Heinen & Watamaniuk-style pursuit-
-// saccade studies) and is what the previous idtResidualFixations/
-// buildTransitions pairing was already doing, just with a fixed
-// dispersion threshold instead of an adaptive velocity one.
+// ── Gaze-event detection ────────────────────────────────────────────────────
+/**
+ * Estimate per-axis gaze velocity with a centered finite difference.
+ * The velocity formula is Δposition / Δtime over a ±2-sample window.
+ */
 function ekAxisVelocity(rows, xKey, yKey, tSecKey) {
   const n = rows.length;
   const vx = new Array(n).fill(0);
@@ -1707,20 +1548,23 @@ function ekAxisVelocity(rows, xKey, yKey, tSecKey) {
   return { vx, vy };
 }
 
+/**
+ * Estimate velocity spread using the median of squared deviations.
+ * Formula: sqrt(median((v - median(v))²)), a robust median-based SD estimate.
+ */
 function ekMedianBasedSD(v) {
   const med = _ft_median(v);
   const sqDev = v.map((x) => (x - med) * (x - med));
   return Math.sqrt(Math.max(_ft_median(sqDev), 0));
 }
 
+/**
+ * Classify fixations and saccades with the Engbert-Kliegl adaptive velocity method.
+ * Formula: (vx/ηx)² + (vy/ηy)² > 1, where η = λ × median-based SD, clamped to configured bounds.
+ * Minimum duration and amplitude filters reject brief, low-amplitude noise events.
+ */
 function detectEventsEK(rows, detectXKey, detectYKey, measureXKey, measureYKey, tSecKey, tMsKey, opts) {
   const cfg = Object.assign(
-    // FIX BC-MATH-13 (revised after testing against realistic simulated
-    // noise -- see comment block below CONFIG.eventDetection for the full
-    // story, including a first attempt at this fix that made things
-    // WORSE and why): lambda lowered from the Engbert & Kliegl (2003)
-    // infrared-tracker default of 6 to 3, with an absolute [min,max] band
-    // on the resulting threshold itself.
     { lambda: 3, minDurationMs: 20, minAmplitude: 0.3,
       minThresholdDegPerSec: 3, maxThresholdDegPerSec: 25 },
     opts || {}
@@ -1730,6 +1574,7 @@ function detectEventsEK(rows, detectXKey, detectYKey, measureXKey, measureYKey, 
   if (n < 5) return { fixations: [], saccades: [], rows: sorted };
 
   const { vx, vy } = ekAxisVelocity(sorted, detectXKey, detectYKey, tSecKey);
+  /** Clamp an adaptive velocity threshold to its configured limits. */
   const clampEta = (raw) => Math.min(Math.max(raw, cfg.minThresholdDegPerSec), cfg.maxThresholdDegPerSec);
   const etaX = clampEta(cfg.lambda * ekMedianBasedSD(vx));
   const etaY = clampEta(cfg.lambda * ekMedianBasedSD(vy));
@@ -1745,9 +1590,8 @@ function detectEventsEK(rows, detectXKey, detectYKey, measureXKey, measureYKey, 
   const medDt = _ft_median(dts) || 33;
   const minSamples = Math.max(2, Math.round(cfg.minDurationMs / medDt));
 
-  // Pass 1: find "fast" runs, and demote any that fail the sustained-
-  // duration or minimum-amplitude criteria back to "fixation" — this is
-  // what keeps single noisy frames from fragmenting fixations.
+  // Reject candidate saccade runs that fail duration or amplitude criteria.
+  /** Group consecutive equal event flags into indexed runs. */
   const runsOf = (flags) => {
     const out = [];
     let i = 0;
@@ -1774,28 +1618,15 @@ function detectEventsEK(rows, detectXKey, detectYKey, measureXKey, measureYKey, 
     }
   }
 
-  // Pass 2: final runs on the corrected flags — adjacent fixation runs
-  // that were only split by a now-rejected noise blip merge naturally.
+  // Rebuild event runs after rejected noise events are merged into fixations.
   const finalRuns = runsOf(corrected);
   const fixations = [];
   const saccades = [];
   for (const run of finalRuns) {
     const durMs = sorted[run.end][tMsKey] - sorted[run.start][tMsKey];
     if (run.flag) {
-      // FIX BC-MATH-14: peak velocity was computed from the SMOOTHED
-      // (+/-2-sample central-difference) velocity of the DETECT channel
-      // (the residual, for pursuit) -- for a short event, that smoothing
-      // window pulls in slower neighbouring samples and can dilute the
-      // peak below the plain path-length/duration AVERAGE velocity
-      // computed just below from the raw MEASURE channel, which is
-      // mathematically impossible for one continuous movement (confirmed
-      // against a real session: HS4_SacPV=34.2 < HS4_SacAV=41.11 for a
-      // single detected saccade). Peak and average now come from the
-      // SAME per-segment raw (unsmoothed) measure-channel speeds, which
-      // guarantees peak >= average by construction: average = total
-      // distance / total duration is a duration-weighted mean of the
-      // per-segment speeds, and a weighted mean can never exceed the
-      // maximum of the values it's averaging.
+      // Average velocity is path length / duration; peak is the maximum segment speed.
+      // Therefore peak velocity is at least the duration-weighted average speed.
       let peakV = 0, pathLen = 0;
       for (let k = run.start + 1; k <= run.end; k += 1) {
         const dt = Math.max(sorted[k][tSecKey] - sorted[k - 1][tSecKey], 1e-9);
@@ -1834,6 +1665,7 @@ function detectEventsEK(rows, detectXKey, detectYKey, measureXKey, measureYKey, 
   return { fixations, saccades, rows: sorted };
 }
 
+/** Calculate point-to-point gaze speed as distance divided by elapsed time. */
 function computePointSpeeds(rows, xKey, yKey, tSecKey) {
   const sorted = [...rows].sort((a, b) => a[tSecKey] - b[tSecKey]);
   const speed = new Array(sorted.length).fill(0);
@@ -1850,6 +1682,7 @@ function computePointSpeeds(rows, xKey, yKey, tSecKey) {
   return speed;
 }
 
+/** Measure the gaze movement between each consecutive pair of fixations. */
 function buildTransitions(fixations, rows, xKey, yKey, tSecKey, tMsKey, speedPxPerSec) {
   const out = [];
   if (fixations.length < 2) return out;
@@ -1883,7 +1716,7 @@ function buildTransitions(fixations, rows, xKey, yKey, tSecKey, tMsKey, speedPxP
   return out;
 }
 
-//changed entire estimateScreenGeometry
+/** Estimate screen width, height, and diagonal in degrees of visual angle. */
 function estimateScreenGeometry(fvRows, spRows, szRows) {
   // Screen dimensions in degrees
   const wDeg = px2deg(window.innerWidth);
@@ -1891,6 +1724,10 @@ function estimateScreenGeometry(fvRows, spRows, szRows) {
   return { width: wDeg, height: hDeg, diag: Math.hypot(wDeg, hDeg) };
 }
 
+/**
+ * Resample irregular measurements onto a uniform time grid by linear interpolation.
+ * Formula: y = y0 + ((t - t0) / (t1 - t0)) × (y1 - y0).
+ */
 function resampleLinear(times, values, sampleRate) {
   if (!times.length || !values.length || times.length !== values.length) {
     return { times: [], values: [] };
@@ -1920,16 +1757,7 @@ function resampleLinear(times, values, sampleRate) {
   return { times: outT, values: outY };
 }
 
-// FIX BC-MATH-12: Hann-window the signal before the DFT in both of these.
-// An un-windowed (rectangular-window) DFT on a short, non-integer-period
-// segment leaks power from the true peak into neighbouring bins — a
-// standard, well-known spectral-analysis issue (e.g. Harris 1978, "On the
-// Use of Windows for Harmonic Analysis with the Discrete Fourier
-// Transform") — which is exactly the failure mode that would bias both
-// the signal estimate (amplitudeAtFrequency, used by computeGain) and the
-// noise-floor estimate (periodogram, used by computeLogSNR) here, since
-// our pursuit segments are ~20s of desaccaded, gappy, non-integer-cycle
-// data rather than a clean integer number of stimulus periods.
+/** Apply the standard Hann window: w[n] = 0.5(1 - cos(2πn/(N - 1))). */
 function hannWindow(values) {
   const n = values.length;
   if (n < 2) return values.slice();
@@ -1941,6 +1769,10 @@ function hannWindow(values) {
   return out;
 }
 
+/**
+ * Estimate sinusoidal amplitude with the discrete Fourier transform.
+ * Formula: amplitude = 2 × sqrt(Re² + Im²) / (N × Hann coherent gain).
+ */
 function amplitudeAtFrequency(times, values, frequencyHz) {
   if (!times.length || !values.length) return NaN;
   const centered = hannWindow(values.map((v) => v - _ft_mean(values)));
@@ -1952,23 +1784,21 @@ function amplitudeAtFrequency(times, values, frequencyHz) {
     re += centered[i] * Math.cos(angle);
     im += centered[i] * Math.sin(angle);
   }
-  // Hann windowing attenuates in-band amplitude by a factor of ~0.5 (its
-  // coherent gain) — rescale so the returned amplitude stays comparable
-  // to the un-windowed estimate used previously.
+  // Correct the Hann window's coherent gain when scaling the amplitude.
   return (2.0 * Math.hypot(re, im)) / Math.max(n * 0.5, 1e-9);
 }
 
+/**
+ * Calculate the one-sided periodogram using the discrete Fourier transform.
+ * Formula: power[k] = (Re² + Im²) / (N × Hann mean-square gain).
+ */
 function periodogram(values, sampleRate) {
   const centered = hannWindow(values.map((v) => v - _ft_mean(values)));
   const n = centered.length;
   const maxK = Math.floor(n / 2);
   const freqs = new Array(maxK + 1);
   const power = new Array(maxK + 1);
-  // Hann window power (mean-square) gain correction, so absolute power
-  // values stay on roughly the same scale as the previous un-windowed
-  // version (the noise-vs-signal RATIO that logSNR actually uses is
-  // unaffected either way, but keeping the scale stable avoids silently
-  // breaking anyone relying on the raw power numbers elsewhere).
+  // Correct for the Hann window's mean-square gain.
   const windowPowerGain = 0.375; // mean-square of a Hann window
   for (let k = 0; k <= maxK; k += 1) {
     let re = 0;
@@ -1985,6 +1815,7 @@ function periodogram(values, sampleRate) {
   return { freqs, power };
 }
 
+/** Return the index of the value closest to the target. */
 function nearestIndex(values, target) {
   let best = 0;
   let bestDiff = Infinity;
@@ -1998,6 +1829,10 @@ function nearestIndex(values, target) {
   return best;
 }
 
+/**
+ * Compute log signal-to-noise ratio around the stimulus frequency.
+ * Formula: log10(signal-bin power / mean neighboring noise-bin power).
+ */
 function computeLogSNR(times, values, frequencyHz, sampleRate) {
   const uniform = resampleLinear(times, values, sampleRate);
   if (uniform.values.length < 8) return NaN;
@@ -2014,6 +1849,7 @@ function computeLogSNR(times, values, frequencyHz, sampleRate) {
   return Math.log10(Math.max(snr, 1e-9));
 }
 
+/** Pursuit gain formula: eye-motion amplitude / target-motion amplitude. */
 function computeGain(times, eyeValues, targetValues, frequencyHz, sampleRate) {
   const eye = resampleLinear(times, eyeValues, sampleRate);
   const target = resampleLinear(times, targetValues, sampleRate);
@@ -2023,6 +1859,10 @@ function computeGain(times, eyeValues, targetValues, frequencyHz, sampleRate) {
   return eyeAmp / Math.max(targetAmp, 1e-9);
 }
 
+/**
+ * Calculate root mean square error between paired measurements.
+ * Formula: RMSE = sqrt(mean((a - b)²)).
+ */
 function computeRmse(a, b) {
   const n = Math.min(a.length, b.length);
   if (!n) return NaN;
@@ -2034,6 +1874,7 @@ function computeRmse(a, b) {
   return Math.sqrt(s / n);
 }
 
+/** Extract fixation, saccade, and gaze-dispersion features from free viewing. */
 function extractFreeViewing(fvRows, screen) {
   const groups = groupBy(fvRows, "image_index");
   const perImage = [];
@@ -2042,12 +1883,6 @@ function extractFreeViewing(fvRows, screen) {
       .filter((r) => Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.tMs))
       .sort((a, b) => a.tMs - b.tMs);
     if (clean.length < 8) continue;
-      // FIX BC-MATH-1: adaptive velocity-threshold detector (see
-      // detectEventsEK) instead of the fixed-dispersion I-DT approach —
-      // saccades/fixations come straight out of one call, with kinematics
-      // (amplitude, peak/avg velocity, path length) computed from the same
-      // smoothed velocity used for classification rather than a separate
-      // unsmoothed single-sample-difference speed estimate.
     const { fixations, saccades: transitions, rows: ordered } = detectEventsEK(
       clean,
       "xDeg", "yDeg", "xDeg", "yDeg",
@@ -2062,19 +1897,15 @@ function extractFreeViewing(fvRows, screen) {
       (((Math.max(...centersX) - Math.min(...centersX)) + (Math.max(...centersY) - Math.min(...centersY))) /
         Math.max(screen.diag, 1e-9)) *
       CONFIG.fv.dispersionScale;
-//changed
-        perImage.push({
+    perImage.push({
       fv_fnum_mean: fixations.length,
       fv_fdur_mean: _ft_mean(fixations.map((f) => f.durMs)),
       fv_snum_mean: transitions.length,
-      fv_sdur_mean: _ft_mean(transitions.map((s) => s.durMs)),   // raw ms, no scale
+      fv_sdur_mean: _ft_mean(transitions.map((s) => s.durMs)),
       fv_samp_mean: _ft_mean(transitions.map((s) => s.ampPx / CONFIG.fv.ampDegPerUnit)),
       fv_spv_mean:  _ft_mean(transitions.map((s) => s.peakVelocityPxPerSec / CONFIG.fv.peakVelocityScale)),
       fv_sav_mean:  _ft_mean(transitions.map((s) => s.avgVelocityPxPerSec / CONFIG.fv.avgVelocityScale)),
-      // The issue is pathPx is in DEGREES (since we pass degree arrays to buildTransitions)
-// but scanpathScale = 1/37 makes it larger, not smaller
-// REPLACE with:
-fv_spl_mean:  _ft_sum(transitions.map((s) => s.pathPx)),  // already in degrees, just sum  // per-image total
+      fv_spl_mean: _ft_sum(transitions.map((s) => s.pathPx)),
       fv_disp_mean: disp,
     });
   }
@@ -2083,7 +1914,7 @@ fv_spl_mean:  _ft_sum(transitions.map((s) => s.pathPx)),  // already in degrees,
   for (const feature of FEATURE_ORDER.filter((name) => name.startsWith("fv_"))) {
     if(perImage.map((r) => r[feature]).filter(Number.isFinite).length===0){out[feature]=0; continue; }
     if (feature === 'fv_spl_mean') {
-      // Sum scanpath totals across all images (training data = cumulative across session)
+      // Scanpath length is cumulative across images; other metrics are averaged.
       out[feature] = _ft_sum(perImage.map((r) => r[feature]).filter(Number.isFinite));
     } else {
       out[feature] = _ft_mean(perImage.map((r) => r[feature]).filter(Number.isFinite));
@@ -2092,11 +1923,13 @@ fv_spl_mean:  _ft_sum(transitions.map((s) => s.pathPx)),  // already in degrees,
   return out;
 }
 
+/** Parse the stimulus frequency in hertz from a phase name. */
 function parseBaseFrequency(phaseName) {
   const match = String(phaseName).match(/([0-9.]+)Hz/i);
   return match ? Number(match[1]) : NaN;
 }
 
+/** Extract pursuit quality and eye-movement features for each SPEM sequence. */
 function extractPursuit(spRows) {
   const out = {};
   const phaseGroups = groupBy(spRows, "TaskPhase");
@@ -2113,23 +1946,15 @@ function extractPursuit(spRows) {
       )
       .map((r) => ({
         ...r,
-        //changed
-          residualX: r.EyeXDeg - r.TargetXDeg,
-          residualY: r.EyeYDeg - r.TargetYDeg,
+        residualX: r.EyeXDeg - r.TargetXDeg,
+        residualY: r.EyeYDeg - r.TargetYDeg,
       }))
       .sort((a, b) => a.tSec - b.tSec);
 
     if (!rows.length) continue;
 
-    // FIX BC-MATH-1: classify on the RESIDUAL (gaze - target) signal with
-    // the adaptive EK detector — a catch-up saccade is a brief high-
-    // velocity excursion correcting pursuit error, so thresholding the
-    // residual's velocity is the standard way to separate it from the
-    // (fast but expected) pursuit motion itself. Kinematics are still
-    // measured from the raw eye trajectory (EyeXDeg/EyeYDeg), matching
-    // how the original idtResidualFixations + buildTransitions pairing
-    // was already split, just with an adaptive threshold instead of a
-    // fixed dispersion one.
+    // Detect catch-up saccades from gaze-minus-target residuals, but measure
+    // their kinematics on the eye trajectory.
     const { fixations, saccades: transitions, rows: ordered } = detectEventsEK(
       rows,
       "residualX", "residualY", "EyeXDeg", "EyeYDeg",
@@ -2142,26 +1967,11 @@ function extractPursuit(spRows) {
     );
 
     const baseHz = parseBaseFrequency(phaseName);
-    // FIX BC-MATH-7: fixation/saccade duration are now real, directly-
-    // measured onset-to-offset durations from the detector — no more
-    // 50/50 blend with phase-duration/count, and no more empirical
-    // "x0.55" fudge factor on saccade duration. Both were compensating
-    // for the coarse dispersion-based segmentation; the adaptive
-    // velocity detector's run boundaries don't need that correction.
     const fixMeanDur = _ft_mean(fixations.map((f) => f.durMs));
     const meanSacDur = _ft_mean(transitions.map((s) => s.durMs));
 
-    // FIX BC-MATH-8: desaccade before computing pursuit quality metrics.
-    // Standard practice in the smooth-pursuit literature (e.g. "Metrics of
-    // two-dimensional smooth pursuit", PMC11801394; "Two-Dimensional
-    // Analysis of Smooth Pursuit...", PMC6753966) is to exclude saccadic
-    // samples before estimating gain/RMSE/SNR, since a handful of large
-    // catch-up-saccade excursions can dominate an RMSE or SNR estimate
-    // computed over the raw signal and bias it independently of how good
-    // the underlying pursuit actually is. We build a pursuit-only (eye,
-    // target, time) series by dropping every sample inside a detected
-    // saccade, then feed that into computeLogSNR / computeRmse /
-    // computeGain instead of the raw arrays.
+    // Exclude detected saccade samples so catch-up movements do not dominate
+    // pursuit gain, RMSE, or signal-to-noise estimates.
     const saccadeMask = new Array(ordered.length).fill(false);
     for (const s of transitions) {
       for (let k = s.start; k <= s.end; k += 1) saccadeMask[k] = true;
@@ -2218,11 +2028,9 @@ function extractPursuit(spRows) {
   }
   return out;
 }
-//changed
-// NOTE: `dispersionThresholdDeg` is kept as a parameter for call-site
-// compatibility but is no longer used — detection now runs through the
-// shared adaptive detectEventsEK() (CONFIG.eventDetection) instead of a
-// per-condition fixed dispersion threshold. See FIX BC-MATH-1.
+/** Summarize fixations and saccades for one or more fixation conditions.
+ * The dispersion argument remains for call-site compatibility; detection uses CONFIG.eventDetection.
+ */
 function extractFixationCondition(szRows, phaseName, dispersionThresholdDeg, ampDegPerUnit, scanpathScale) {
   const phases = Array.isArray(phaseName) ? phaseName : [phaseName];
   const rows = szRows
@@ -2230,7 +2038,6 @@ function extractFixationCondition(szRows, phaseName, dispersionThresholdDeg, amp
     .filter((r) => Number.isFinite(r.tMs) && Number.isFinite(r.Gaze_X) && Number.isFinite(r.Gaze_Y))
     .sort((a, b) => a.tMs - b.tMs);
 
-  // FIX BC-MATH-1: adaptive velocity-threshold detector, see detectEventsEK.
   const { fixations, saccades: transitions } = detectEventsEK(
     rows, 'Gaze_XDeg', 'Gaze_YDeg', 'Gaze_XDeg', 'Gaze_YDeg', 'tSec', 'tMs',
     CONFIG.eventDetection
@@ -2245,6 +2052,7 @@ function extractFixationCondition(szRows, phaseName, dispersionThresholdDeg, amp
   };
 }
 
+/** Split antisaccade samples into trials when the time gap exceeds a limit. */
 function splitAntisaccadeTrials(szRows, gapMs) {
   const ant = szRows
     .filter((r) => r.Phase === "ANTISACCADE")
@@ -2255,8 +2063,7 @@ function splitAntisaccadeTrials(szRows, gapMs) {
   const trials = [];
   let start = 0;
   for (let i = 1; i < ant.length; i += 1) {
-    //changed
-        if ((ant[i].tMs - ant[i - 1].tMs) > gapMs) {
+    if ((ant[i].tMs - ant[i - 1].tMs) > gapMs) {
       trials.push(ant.slice(start, i));
       start = i;
     }
@@ -2265,6 +2072,7 @@ function splitAntisaccadeTrials(szRows, gapMs) {
   return trials;
 }
 
+/** Estimate screen center from fixation targets, with a geometry fallback. */
 function estimateCenterX(szRows, screen) {
   const stableTargets = szRows
     .filter((r) => r.Phase !== "ANTISACCADE")
@@ -2274,20 +2082,7 @@ function estimateCenterX(szRows, screen) {
   return screen.width / 2.0;
 }
 
-// FIX BC-MATH-9: robust saccade-onset detection for the antisaccade task.
-// The previous version flagged a saccade the instant ANY single sample's
-// raw single-difference velocity crossed 15 deg/s — well below every
-// value we found in the antisaccade literature (Gitelman 2002's commonly-
-// cited ~30 deg/s; PLOS ONE 2011 used 40 deg/s with a 1.5 deg amplitude
-// floor; Journal of Cognition 2019 used 30 deg/s with 1 deg amplitude and
-// a 100ms anticipatory cutoff) and with no duration or amplitude floor at
-// all — exactly the conditions under which webcam positional jitter can
-// masquerade as a saccade. This version: (1) smooths velocity the same
-// way as detectEventsEK, (2) requires the threshold crossing to sustain
-// for a minimum duration, (3) requires a minimum net amplitude, and
-// (4) excludes anticipatory "responses" from the latency estimate
-// specifically (error/direction classification still uses them, since a
-// fast reflexive error is still a real error).
+/** Find the first sustained, threshold-crossing saccade meeting amplitude criteria. */
 function findQualifyingSaccadeOnset(trial, vx, velocityThreshold, minSamples, minAmplitudeDeg) {
   let i = 1;
   while (i < vx.length) {
@@ -2310,7 +2105,11 @@ function findQualifyingSaccadeOnset(trial, vx, velocityThreshold, minSamples, mi
   return null;
 }
 
-// In estimateCenterX — changed Target_X to Target_XDeg
+/**
+ * Calculate antisaccade error, correction, latency, and accuracy features.
+ * Expected target reflection: x_correct = 2 × centerX − targetX.
+ * Error rate = error trials / trials; accuracy = correct trials / trials.
+ */
 function extractAntisaccade(szRows, screen) {
   const centerX = estimateCenterX(szRows, screen);
   const trials = splitAntisaccadeTrials(szRows, CONFIG.antisaccade.trialGapMs);
@@ -2327,7 +2126,7 @@ function extractAntisaccade(szRows, screen) {
   for (const trial of trials) {
     if (trial.length < 3) continue;
     const targetX = trial[0].Target_XDeg;
-   const correctX = 2.0 * centerX - targetX; 
+    const correctX = 2.0 * centerX - targetX;
     const correctDir = Math.sign(correctX - centerX) || 1;
 
     // Smoothed velocity: short central-difference window (same style as
@@ -2340,11 +2139,7 @@ function extractAntisaccade(szRows, screen) {
       if (dt > 1e-6) vx[i] = (trial[i1].Gaze_XDeg - trial[i0].Gaze_XDeg) / dt;
     }
 
-    // Minimum sustained-duration criterion, translated from ms into a
-    // sample count using this trial's own median inter-sample interval
-    // (this session's effective rate varies session-to-session — see the
-    // sampling-rate audit — so a fixed sample count would be wrong at a
-    // different rate).
+    // Convert the minimum duration to samples using this trial's median interval.
     const dts = [];
     for (let i = 1; i < trial.length; i += 1) dts.push((trial[i].tSec - trial[i - 1].tSec) * 1000);
     const medDt = _ft_median(dts) || 33;
@@ -2390,6 +2185,7 @@ function extractAntisaccade(szRows, screen) {
   };
 }
 
+/** Round feature values according to the precision required by their type. */
 function roundFeature(name, value) {
   const threeDecimal =
     name.includes("logSNR") ||
@@ -2402,25 +2198,7 @@ function roundFeature(name, value) {
   return Math.round(value * factor) / factor;
 }
 
-// FIX BC-MATH-10 (IMPORTANT): NaN can mean two very different things here,
-// and the old code collapsed both into "use the lower bound":
-//  (a) a genuine count of zero — e.g. zero saccades really did occur.
-//      0 (bound.lower for the *Num features) IS the correct value.
-//  (b) insufficient valid data to estimate a rate/duration/amplitude/
-//      velocity/signal-quality metric — e.g. every antisaccade trial was
-//      an initial error, so there is no valid "correct-response latency"
-//      to average. Falling back to bound.lower here (100ms for
-//      antisaccade_latency) silently turned "we couldn't measure this"
-//      into "this participant responded unusually fast" — the opposite
-//      of what happened, and exactly the kind of artifact that could
-//      look like a spurious HC/SZ signal downstream (a clinically more
-//      impaired participant, more likely to have all-error blocks, would
-//      be more likely to get this floor value).
-// For class (b) we now fall back to the bound MIDPOINT (a neutral
-// "unknown", not an extreme) and flag the feature as low-confidence via
-// the returned `lowConfidence` flag, surfaced separately as
-// `dataQuality` (see runAIClassification) — NOT as one of the 59 feature
-// columns, so the exported feature contract is unchanged.
+// Features in this set use the midpoint of their bounds when no valid estimate exists.
 const NA_FALLBACK_MIDPOINT = new Set([
   "antisaccade_latency",
   "HS4_SacDur", "HS4_SacAmp", "HS4_SacPV", "HS4_SacAV",
@@ -2436,6 +2214,7 @@ const NA_FALLBACK_MIDPOINT = new Set([
   "HS4_FixDur", "LS2_FixDur", "LS4_FixDur",
 ]);
 
+/** Replace missing feature values, clamp to bounds, and apply final rounding. */
 function finalizeFeature(name, rawValue) {
   let value = rawValue;
   let lowConfidence = false;
@@ -2453,11 +2232,13 @@ function finalizeFeature(name, rawValue) {
   return { value: roundFeature(name, value), lowConfidence };
 }
 
+/** Create a shallow copy of each data row before normalization. */
 function cloneRows(rows) {
   return rows.map((row) => ({ ...row }));
 }
 
-  // ── In-memory CSV builders ──
+  // ── In-memory task data builders ─────────────────────────────────────────
+  /** Convert collected free-viewing samples into feature-extractor rows. */
   function buildFvRows() {
     const allImageData = RawGazeCollector.getAllImageData();
     const rows = [];
@@ -2469,6 +2250,7 @@ function cloneRows(rows) {
     return rows;
   }
 
+  /** Convert SPEM samples into feature-extractor rows. */
   function buildSpemRowsForExtractor() {
     return spemDataLog.map(r => ({
       Timestamp:r.time, TaskPhase:r.phase,
@@ -2477,6 +2259,7 @@ function cloneRows(rows) {
     }));
   }
 
+  /** Parse SchizoEye CSV lines into feature-extractor rows. */
   function buildSzRowsForExtractor() {
     return szCsv.map(line => {
       const p = line.split(',');
@@ -2486,9 +2269,8 @@ function cloneRows(rows) {
     });
   }
 
-  // ── Main AI pipeline ──
-  // ── Main AI pipeline ──
-  // ── Feature extraction and model inference ──
+  // ── Feature extraction and inference ──────────────────────────────────────
+  /** Extract session features, request model inference, then persist results. */
   async function runAIClassification() {
     const statusEl = document.getElementById('ai-status-text');
     let featuresReady = false;
@@ -2575,20 +2357,19 @@ function cloneRows(rows) {
           throw new Error(classifyData.error || `Inference HTTP ${classifyResponse.status}`);
         }
         if (!classifyData.prediction) {
-          // Tolerate a flatter response shape ({predicted_label, confidence, ...})
-          // instead of assuming every backend revision nests it under `prediction`.
+          // Normalize the flat response shape to the prediction object used by the UI.
           classifyData.prediction = {
             label: classifyData.predicted_label,
             confidence: classifyData.confidence,
           };
         }
         _lastPrediction = classifyData.prediction;
-        _lastClassProbabilities = classifyData.class_probabilities || null; // FIX PDF-1
+        _lastClassProbabilities = classifyData.class_probabilities || null;
         statusEl.textContent = `✓ Inference complete — ${classifyData.prediction.label}`;
         renderPrediction(classifyData.prediction, classifyData.class_probabilities);
       } catch (inferenceErr) {
         _lastPrediction = null;
-        _lastClassProbabilities = null; // FIX PDF-1
+        _lastClassProbabilities = null;
         statusEl.textContent = `⚠ Inference unavailable — saving collected data anyway...`;
         console.warn('[BatteryController] Classification failed; continuing to save:', inferenceErr);
         if (typeof window.reportClientError === 'function') window.reportClientError('classification (non-blocking)', inferenceErr, `API: ${API_BASE}/classify`);
@@ -2603,28 +2384,25 @@ function cloneRows(rows) {
       statusEl.textContent = '✗ Error: ' + err.message;
       if (typeof window.reportClientError === 'function') window.reportClientError('feature extraction', err, `API base: ${API_BASE}`);
       console.error('Feature extraction error', err);
-      // If feature extraction completed but a later non-model step failed,
-      // make one final persistence attempt rather than silently losing data.
+      // Preserve extracted features if a later step fails.
       if (featuresReady) {
         try { await saveSessionToDatabase(); } catch (_) {}
       }
     }
   }
 
+  /** Display extracted features and enable PDF download independent of inference. */
   function renderFeaturesOnly(features) {
     const el = document.getElementById('ai-features-summary');
     el.innerHTML = '<div style="columns:3;column-gap:24px;">' +
       FEATURE_ORDER.map(n => `<div style="break-inside:avoid;padding:2px 0"><span style="color:var(--dim)">${n}</span> <span style="color:var(--accent); font-weight:bold; float:right;">${features[n]}</span></div>`).join('') +
       '</div>';
     document.getElementById('ai-results-body').style.display = 'block';
-    // downloadPDFReport() only reads _lastFeatures/canvas snapshots — it never
-    // touches _lastPrediction — so the button belongs here, not behind a
-    // successful /classify call. That gating is exactly why it stayed hidden
-    // whenever inference failed even though a report could still be built.
     const pdfBtn = document.getElementById('btn-dl-pdf');
     if (pdfBtn) pdfBtn.style.display = 'inline-block';
   }
 
+  /** Read class probabilities from either supported prediction response shape. */
   function _extractProbs(prediction, classProbabilities) {
     let healthy = null, schizo = null;
     if (prediction) {
@@ -2641,20 +2419,7 @@ function cloneRows(rows) {
     return { healthy, schizo };
   }
 
-  // FIX PDF-1: neither downloadPDFReport() nor saveSessionToDatabase() were
-  // ever sending the model's prediction to the backend at all — the payload
-  // built for /generate-report and /save_results only ever carried
-  // patient info, PANSS, the 59 features, and the graph images. app.py's
-  // _internal_generate_pdf() explicitly documented this as intentional
-  // ("No AI predictions in data collection mode — omit predictions block"),
-  // and report_template.html had no place to show one even if it had been
-  // sent. Both are fixed now (see app.py + report_template.html); this
-  // builds the {label, confidence, healthy_probability,
-  // schizophrenia_probability} shape the template expects, reusing the
-  // same _extractProbs() fallback the on-screen prediction card already
-  // relies on so a flattened {label, confidence}-only prediction (the
-  // no-`prediction`-object branch in runAIClassification's fetch) still
-  // gets its percentages filled in from _lastClassProbabilities.
+  /** Build the prediction fields included in report and persistence payloads. */
   function _buildPredictionForReport() {
     if (!_lastPrediction) return null;
     const { healthy, schizo } = _extractProbs(_lastPrediction, _lastClassProbabilities);
@@ -2666,6 +2431,7 @@ function cloneRows(rows) {
     };
   }
 
+  /** Render the model label, confidence, and class-probability bars. */
   function renderPrediction(prediction, classProbabilities) {
     const el = document.getElementById('ai-prediction-summary');
     if (!el || !prediction) return;
@@ -2677,6 +2443,7 @@ function cloneRows(rows) {
     const isSchizo = /schiz/i.test(prediction.label || '');
     const labelColor = isSchizo ? '#b91c1c' : '#166534';
 
+    /** Build one labeled probability bar for the prediction card. */
     const bar = (label, pct, color) => `
       <div>
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:6px;">
@@ -2704,6 +2471,7 @@ function cloneRows(rows) {
       </div>`;
   }
 
+  /** Explain why inference is unavailable while keeping extracted features visible. */
   function renderPredictionUnavailable(reason) {
     const el = document.getElementById('ai-prediction-summary');
     if (!el) return;
@@ -2715,6 +2483,7 @@ function cloneRows(rows) {
       </div>`;
   }
 
+  /** Send task data, extracted features, and report images to the backend. */
   async function saveSessionToDatabase() {
     const statusEl = $('ai-status-text');
     try {
@@ -2761,17 +2530,13 @@ function cloneRows(rows) {
               notes: collectedNotes,
               notes_author: collectedAuthor,
               calibration_error: EyeTracker.getCalibrationError(),
-              // FIX BC-MATH-6/11: record what this session actually used/
-              // achieved, instead of leaving it to be reverse-engineered
-              // from raw timestamp gaps after the fact (which is how the
-              // ~20/30/60 Hz session-to-session spread was originally
-              // discovered — this makes it explicit going forward).
+              // Store the session's visual-angle scale and tracker diagnostics.
               px_per_deg_used: pxPerDeg,
               tracker_performance: (typeof EyeTracker.getPerformanceStats === 'function')
                 ? EyeTracker.getPerformanceStats() : null,
               data_quality: _lastDataQuality,
               features: _lastFeatures,
-              prediction: _buildPredictionForReport(), // FIX PDF-1
+              prediction: _buildPredictionForReport(),
               fv_gaze: _lastFvRaw,
               spem_gaze: buildSpemRowsForExtractor(),
               sz_gaze: buildSzRowsForExtractor(),

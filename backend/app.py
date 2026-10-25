@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import joblib
 import pandas as pd
-import json
 import os
 from datetime import datetime
 import io
@@ -11,14 +10,13 @@ import base64
 import traceback
 import uuid
 
-# MongoDB Imports
+# MongoDB dependencies
 from pymongo import MongoClient, errors
 import gridfs
 from bson.binary import Binary
-from bson.objectid import ObjectId
 from dotenv import load_dotenv
 
-# Heatmap Imports
+# Heatmap dependencies
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -34,42 +32,24 @@ except ImportError:
 
 import secrets
 
-# The frontend is a separate Netlify deployment — this backend never serves
-# its HTML/JS, only the API and generated PDFs. Templates must live inside
-# THIS project's own folder (backend/templates/), because Render builds this
-# Dockerfile with backend/ as the build context: a path that reaches out to
-# a sibling ../frontend/ directory points at something that doesn't exist
-# inside the image at all, which is why render_template('report_template.html')
-# was raising TemplateNotFound even though the file existed in the repo.
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE, 'templates')
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR)
-# ── CORS ─────────────────────────────────────────────────────────────────────
-# The allowlist here used to name https://naina-assessment.netlify.app while the
-# deployed frontend lives at https://naina-schizo.netlify.app. Any origin that is
-# not on this list gets no Access-Control-Allow-Origin header, the browser
-# discards the response before JS ever sees it, and fetch() rejects with
-# "TypeError: Failed to fetch" — which is exactly what /sessions, /classify and
-# /save_results were all reporting. Keep this list in sync with wherever the
-# frontend is actually served from.
-#
-# Set CORS_ORIGINS in Render to add origins without a code change:
-#   CORS_ORIGINS=https://partner.example.com,https://staging.example.com
-# supports_credentials=True means "*" is not legal here — every origin must be
-# listed explicitly (Netlify deploy previews are matched by regex below).
+# --- CORS configuration ---
+
+
 _DEFAULT_ORIGINS = [
-    "https://naina-schizo.netlify.app",      # production frontend
-    "https://naina-assessment.netlify.app",  # previous domain, kept for old links
+    "https://naina-schizo.netlify.app",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "http://localhost:5500",
-    "http://127.0.0.1:5500",
 ]
 
 _extra_origins = [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 
-# Netlify branch/deploy previews: https://<hash>--naina-schizo.netlify.app
+
 _NETLIFY_PREVIEW_RE = re.compile(r"^https://[a-z0-9-]+--naina-schizo\.netlify\.app$")
 
 ALLOWED_ORIGINS = list(dict.fromkeys(_DEFAULT_ORIGINS + _extra_origins))
@@ -86,38 +66,42 @@ print(f"[CORS] allowed origins: {ALLOWED_ORIGINS} (+ netlify deploy previews)")
 
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
-# A completed battery posts three raw gaze arrays plus the embedded figures.
-# Without a ceiling Flask happily buffers the whole thing into a 512 MB dyno.
-app.config["MAX_CONTENT_LENGTH"] = 48 * 1024 * 1024   # 48 MB
 
-# Cross-site XHR from the Netlify frontend can only carry the session cookie if
-# it is SameSite=None; Secure. Without this the cookie is dropped and every
-# authenticated endpoint answers 401 from a different machine than the one that
-# logged in.
+app.config["MAX_CONTENT_LENGTH"] = 48 * 1024 * 1024
+
+
 app.config.update(
     SESSION_COOKIE_SAMESITE="None",
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
 )
 
-# ── DISABLE BROWSER CACHING FOR ALL RESPONSES ──
+# --- Response caching ---
 @app.after_request
 def add_no_cache_headers(response):
-    """Prevent stale JS/CSS caching across browsers and systems."""
+    """Disable browser caching for API responses."""
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
 
-# ── USER CREDENTIALS (admin, doctor, clinician) ──
-USERS = {
-    "admin":     {"password": os.getenv("ADMIN_PASSWORD",     "admin123"),     "role": "admin"},
-    "doctor":    {"password": os.getenv("DOCTOR_PASSWORD",    "doctor123"),    "role": "doctor"},
-    "clinician": {"password": os.getenv("CLINICIAN_PASSWORD", "clinician123"), "role": "clinician"},
+# --- Authentication ---
+_AUTH_CONFIG = {
+    "admin": ("ADMIN_PASSWORD", "admin"),
+    "doctor": ("DOCTOR_PASSWORD", "doctor"),
+    "clinician": ("CLINICIAN_PASSWORD", "clinician"),
 }
+USERS = {}
+for username, (env_name, role) in _AUTH_CONFIG.items():
+    password = os.getenv(env_name)
+    if password:
+        USERS[username] = {"password": password, "role": role}
+    else:
+        print(f"[WARN] {env_name} is not configured; {username} login is disabled.")
 
 @app.route('/login', methods=['POST'])
 def login():
+    """Authenticate a configured user and establish a session."""
     data = request.get_json()
     username = data.get('username', '').strip()
     password = data.get('password', '').strip()
@@ -131,11 +115,12 @@ def login():
 
 @app.route('/logout', methods=['POST'])
 def logout():
+    """Clear the current user session."""
     from flask import session as flask_session
     flask_session.clear()
     return jsonify({'success': True})
 
-# ── MONGODB SETUP ──
+# --- MongoDB setup ---
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "SchizoEye")
 SESSIONS_COLLECTION = "sessions"
@@ -144,6 +129,7 @@ fs = None
 
 
 def _get_scoped_database(client):
+    """Return the configured database after checking its name."""
     scoped_db = client.get_database(MONGODB_DB_NAME)
     if scoped_db.name != "SchizoEye":
         raise errors.ConfigurationError(
@@ -152,14 +138,15 @@ def _get_scoped_database(client):
     return scoped_db
 
 def _legacy_init_mongodb():
+    """Legacy MongoDB initializer retained for compatibility."""
     global db, fs
     try:
-        # Use standard SRV connection string with retryWrites=true
+
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-        # Scoped strictly to SchizoEye database
+
         db = client.get_database("SchizoEye")
         fs = gridfs.GridFS(db)
-        # Trigger a connection check
+
         client.admin.command('ping')
         print("[OK] MongoDB Atlas connected successfully (SchizoEye)")
     except errors.ConfigurationError as ce:
@@ -168,15 +155,13 @@ def _legacy_init_mongodb():
         print(f"[ERROR] MongoDB Connection Error: {e}")
 
 def init_mongodb():
+    """Connect to MongoDB, initialize GridFS, and ensure indexes."""
     global db, fs
     try:
         if not MONGODB_URI:
             raise errors.ConfigurationError("MONGODB_URI is not configured.")
 
-        # Connection pool optimized for web application (OLTP workload)
-        # maxPoolSize: 50 handles concurrent test submissions
-        # minPoolSize: 10 pre-warms connections for test completion spikes
-        # maxIdleTimeMS: 300000 (5 min) balances connection reuse with server resources
+
         client = MongoClient(
             MONGODB_URI,
             maxPoolSize=50,
@@ -191,9 +176,9 @@ def init_mongodb():
         fs = gridfs.GridFS(db)
         client.admin.command('ping')
         print(f"MongoDB Atlas connected successfully ({db.name})")
-        # Log connection pool stats
+
         print(f"Connection pool - max: 50, min: 10, idle timeout: 5min")
-        # Initialize indexes
+
         _ensure_indexes()
     except errors.ConfigurationError as ce:
         db = None
@@ -208,59 +193,41 @@ def init_mongodb():
         print(f"MongoDB connection error: {e}")
 
 def _ensure_indexes():
-    """Create indexes for optimal query performance"""
+    """Create indexes used by session queries and sorting."""
     if db is None:
         return
     try:
         sessions = db[SESSIONS_COLLECTION]
-        
-        # Index 1: Query sessions by patient name (most common query)
+
+
         sessions.create_index("metadata.name", name="idx_patient_name", background=True)
-        
-        # Index 2: Query sessions by timestamp (for sorting/filtering by date)
+
+
         sessions.create_index("metadata.timestamp", name="idx_timestamp", background=True)
-        
-        # Index 3: Compound index for patient + timestamp queries
+
+
         sessions.create_index(
             [("metadata.name", 1), ("metadata.timestamp", -1)],
             name="idx_patient_time",
             background=True
         )
-        
+
         print("[OK] Database indexes created/verified")
     except Exception as e:
         print(f"Warning: Could not create indexes: {e}")
 
 init_mongodb()
 
-# ── MODEL LOADING ──
-# Drop {model_calibrated.pkl or model.pkl} / label_encoder.pkl / feature_names.pkl
-# into backend/model_artifacts/ (next to this file) — see classify_endpoint_snippet.py
-# and retrain_fixed.py, which this section and the /classify route are adapted from.
-#
-# model_calibrated.pkl is preferred over model.pkl when both exist: retrain_fixed.py
-# wraps the plain XGBClassifier in a 5-fold isotonic CalibratedClassifierCV
-# specifically "so confidence values are trustworthy" — raw tree-based
-# probabilities tend to be overconfident, and the results screen now shows the
-# Healthy/Schizophrenia percentages front and center, so the calibrated numbers
-# are the ones worth showing. CalibratedClassifierCV exposes the same
-# .predict_proba() interface as the plain model, so nothing else below needs to
-# know which one actually loaded.
-_MODEL_DIR = os.path.join(BASE, 'model_artifacts')
-_MODEL_FILE_CANDIDATES = ['model_calibrated.pkl', 'model.pkl']
-_clf = _label_encoder_clf = _feature_names = None
-_model_source = None
+# --- Model loading ---
 
-for _candidate in _MODEL_FILE_CANDIDATES:
-    _candidate_path = os.path.join(_MODEL_DIR, _candidate)
-    if not os.path.exists(_candidate_path):
-        continue
-    try:
-        _clf = joblib.load(_candidate_path)
-        _model_source = _candidate
-        break
-    except Exception as e:
-        print(f"[WARN] Found {_candidate} in {_MODEL_DIR} but could not load it: {e}")
+
+_MODEL_DIR = os.path.join(BASE, 'model_artifacts')
+_clf = _label_encoder_clf = _feature_names = None
+
+try:
+    _clf = joblib.load(os.path.join(_MODEL_DIR, 'model.pkl'))
+except Exception as e:
+    print(f"[WARN] model.pkl not loaded from {_MODEL_DIR}: {e}")
 
 try:
     _label_encoder_clf = joblib.load(os.path.join(_MODEL_DIR, 'label_encoder.pkl'))
@@ -269,19 +236,19 @@ except Exception as e:
     print(f"[WARN] label_encoder.pkl / feature_names.pkl not loaded from {_MODEL_DIR}: {e}")
 
 if _clf is not None and _label_encoder_clf is not None and _feature_names is not None:
-    print(f"[OK] Classifier loaded from {_model_source} ({len(_feature_names)} features) in {_MODEL_DIR}")
+    print(f"[OK] XGBoost classifier loaded from model.pkl ({len(_feature_names)} features) in {_MODEL_DIR}")
 else:
     _still_missing = [
         label for label, val in (
-            ('model_calibrated.pkl or model.pkl', _clf),
+            ('model.pkl', _clf),
             ('label_encoder.pkl', _label_encoder_clf),
             ('feature_names.pkl', _feature_names),
         ) if val is None
     ]
     print(f"[WARN] Classifier not fully loaded from {_MODEL_DIR}; missing: {', '.join(_still_missing)}")
-    _clf = None  # /classify checks this and refuses cleanly rather than half-loading
+    _clf = None
 
-# Kept for anything elsewhere that still imports these names.
+
 label_encoder = _label_encoder_clf
 classifier = _clf
 regressor = None
@@ -302,32 +269,18 @@ REQUIRED_FEATURES = [
     'antisaccade_latency', 'antisaccade_accuracy'
 ]
 
-# Column order the model was actually trained on, when available — this is
-# what predict_proba() must be fed in, and it is not guaranteed to match the
-# hand-maintained REQUIRED_FEATURES list above if the model is ever retrained
-# with a different feature set.
+
 _CLASSIFY_FEATURE_ORDER = _feature_names if _feature_names else REQUIRED_FEATURES
 
 
 @app.route('/classify', methods=['POST'])
 def classify():
-    """
-    Body: { "features": { <feature_name>: <value>, ... } }
-    Returns the predicted label, its confidence, per-class probabilities
-    (so the frontend can show a Healthy-vs-Schizophrenia split), and which
-    features (if any) were missing and therefore treated as NaN by the model
-    rather than a real measurement.
-
-    This route did not exist before, which is why calls to it were coming
-    back as HTTP 405: with static_url_path='/', a POST to an unmatched path
-    still matches Flask's static-file route (methods GET/HEAD/OPTIONS only),
-    so it fails with "Method Not Allowed" instead of a plain 404.
-    """
+    """Validate submitted features and return model predictions."""
     if _clf is None or _label_encoder_clf is None:
         return jsonify({
             'success': False,
             'error': f'Classifier not available on this server (looked in {_MODEL_DIR}). '
-                     'Confirm model_calibrated.pkl (or model.pkl), label_encoder.pkl and feature_names.pkl were deployed there.'
+                     'Confirm model.pkl, label_encoder.pkl and feature_names.pkl were deployed there.'
         }), 503
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -345,9 +298,7 @@ def classify():
         pred_label = str(classes[pred_idx])
         confidence = float(probs[pred_idx])
 
-        # Pull out Healthy / Schizophrenia explicitly (rather than making the
-        # frontend guess at label spelling) so the result card can show both
-        # percentages regardless of how label_encoder.classes_ is ordered.
+
         healthy_p = next((p for c, p in prob_map.items() if c.lower().startswith('health')), None)
         schizo_p  = next((p for c, p in prob_map.items() if 'schiz' in c.lower()), None)
 
@@ -369,12 +320,12 @@ def classify():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-
-# ── HEATMAP GENERATION FUNCTION ──
+# --- Gaze heatmap generation ---
 def generate_heatmap_base64(fv_gaze_data):
+    """Generate a gaze heatmap and return it as a base64 data URI."""
     if not fv_gaze_data:
         return ""
-        
+
     df = pd.DataFrame(fv_gaze_data)
     if 'is_blink' in df.columns:
         df_clean = df[df['is_blink'] == 0].copy()
@@ -384,12 +335,12 @@ def generate_heatmap_base64(fv_gaze_data):
     if df_clean.empty:
         return ""
 
-    width = int(df_clean['x'].max()) + 100 
+    width = int(df_clean['x'].max()) + 100
     height = int(df_clean['y'].max()) + 100
-    
+
     width = min(max(width, 800), 3000)
     height = min(max(height, 600), 3000)
-    
+
     heatmap_data = np.zeros((height, width))
 
     for _, row in df_clean.iterrows():
@@ -401,15 +352,15 @@ def generate_heatmap_base64(fv_gaze_data):
 
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(10, 5.625), dpi=150)
-    
-    ax.imshow(heatmap_smoothed, cmap='turbo', interpolation='bilinear', 
-              extent=[0, width, height, 0], aspect='auto', 
-              vmin=0.001 * np.max(heatmap_smoothed)) 
+
+    ax.imshow(heatmap_smoothed, cmap='turbo', interpolation='bilinear',
+              extent=[0, width, height, 0], aspect='auto',
+              vmin=0.001 * np.max(heatmap_smoothed))
 
     ax.set_xticks(np.arange(0, width, 100))
     ax.set_yticks(np.arange(0, height, 100))
     ax.grid(which='major', color='#333333', linestyle='-', linewidth=0.6, alpha=0.4)
-    
+
     ax.set_xticklabels([])
     ax.set_yticklabels([])
     ax.tick_params(axis='both', which='both', length=0)
@@ -421,61 +372,48 @@ def generate_heatmap_base64(fv_gaze_data):
     plt.savefig(buf, format='png', facecolor='black', bbox_inches='tight', pad_inches=0)
     plt.close(fig)
     buf.seek(0)
-    
+
     b64_str = base64.b64encode(buf.read()).decode('utf-8')
     return f"data:image/png;base64,{b64_str}"
 
 def _internal_generate_pdf(data):
-    """Helper to generate PDF bytes for both report download and GridFS storage"""
+    """Render the report template and return PDF bytes."""
     try:
-        # Enforce defaults for report structure
+
         if 'patient' not in data: data['patient'] = {}
         data['patient'].setdefault('id', f"P_{datetime.now().strftime('%Y%m%d%H%M')}")
         data['patient'].setdefault('name', 'Unknown')
         data['patient'].setdefault('age_sex', 'N/A')
         data['patient'].setdefault('date', datetime.now().strftime('%Y-%m-%d'))
-        
+
         if 'images' not in data: data['images'] = {}
         if data.get('fv_gaze'):
             data['images']['heatmap'] = generate_heatmap_base64(data['fv_gaze'])
-        
+
         for key in ['spem_hs4', 'spem_ls2', 'spem_ls4', 'fix_pure', 'fix_dist']:
             data['images'].setdefault(key, "")
 
         if 'metrics' not in data: data['metrics'] = {}
-        
-        # Add PANSS score to metrics for template access
+
+
         panss_val = data.get('panss_score')
         if panss_val is not None and panss_val != 'Not recorded':
             data['metrics']['panss_score'] = panss_val
-        
-        # Add doctor's notes to data
+
+
         if 'doctor_notes' not in data:
             data['doctor_notes'] = ""
-        
-        # Add PANSS score to data (ensure it's present)
+
+
         if 'panss_score' not in data:
             data['panss_score'] = 'Not recorded'
 
-        # FIX PDF-1: report_template.html now renders a "Model Prediction
-        # Summary" box on page 1 from data.prediction (label, confidence,
-        # healthy_probability, schizophrenia_probability). Callers that
-        # don't have a prediction (inference failed, or this is a raw
-        # feature-only save) simply omit the key; the template's
-        # {% if data.prediction %} branch renders a plain "unavailable"
-        # notice instead of a blank/missing section either way.
+
         data.setdefault('prediction', None)
 
         rendered_html = render_template("report_template.html", data=data)
-        # FIX PDF-2: pdf_variant='pdf/a-1b' is a strict archival PDF profile
-        # that requires every embedded raster image to carry its own ICC
-        # colour profile. The heatmap (matplotlib), SPEM plots (Plotly PNG),
-        # and fixation scatters (<canvas> toDataURL) here are all generated
-        # on the fly and never carry one, so WeasyPrint's PDF/A pass was
-        # silently dropping every one of them from the output — the PDF
-        # itself still generated fine, just with none of the visuals. This
-        # app has no actual archival-compliance requirement, so a plain PDF
-        # (no forced variant) is used instead and the images render.
+
+
         return HTML(string=rendered_html).write_pdf()
     except Exception as e:
         traceback.print_exc()
@@ -483,6 +421,7 @@ def _internal_generate_pdf(data):
 
 
 def _ensure_binary_payload(payload, file_label):
+    """Convert a bytes-like payload to BSON Binary."""
     if isinstance(payload, Binary):
         return payload
     if isinstance(payload, (bytes, bytearray)):
@@ -491,12 +430,14 @@ def _ensure_binary_payload(payload, file_label):
 
 
 def _json_rows_to_csv_binary(json_data):
+    """Serialize row data as a GridFS-compatible CSV payload."""
     output = io.StringIO()
     pd.DataFrame(json_data).to_csv(output, index=False)
     return _ensure_binary_payload(output.getvalue().encode('utf-8'), "CSV payload")
 
 
 def _serialize_sz_csv(sz_data):
+    """Serialize SZ gaze data as a GridFS-compatible CSV payload."""
     if isinstance(sz_data, list) and sz_data and isinstance(sz_data[0], str):
         sz_csv_str = "Timestamp_ms,Phase,Gaze_X,Gaze_Y,Target_X,Target_Y\n" + "\n".join(sz_data)
         return _ensure_binary_payload(sz_csv_str.encode('utf-8'), "SZ CSV payload")
@@ -504,23 +445,25 @@ def _serialize_sz_csv(sz_data):
 
 
 def _upload_to_gridfs(binary_payload, filename, content_type, metadata):
+    """Store a binary asset in GridFS and return its file ID."""
     payload = _ensure_binary_payload(binary_payload, filename)
     return fs.put(payload, filename=filename, content_type=content_type, metadata=metadata)
 
 @app.route('/health', methods=['GET'])
 def health():
+    """Report backend status and MongoDB availability."""
     return jsonify({
-        'status': 'ok', 
+        'status': 'ok',
         'mode': 'data_collection',
         'mongodb_connected': db is not None,
         'mongodb_db': db.name if db is not None else None
     })
 
-# ── SESSION DATA ROUTES ──────────────────────────────────────────────────────
+# --- Session data routes ---
 
 @app.route('/sessions', methods=['GET','OPTIONS'])
 def get_sessions():
-    """Return summary list of all sessions for the dashboard."""
+    """Return recent session summaries for the dashboard."""
     if db is None:
         return jsonify({'success': False, 'error': 'Database not connected'}), 503
     try:
@@ -558,16 +501,16 @@ def get_sessions():
 
 @app.route('/sessions/search', methods=['GET'])
 def search_sessions():
-    """Search sessions by patient name or patient_id."""
+    """Search sessions by patient name or patient ID."""
     if db is None:
         return jsonify({'success': False, 'error': 'Database not connected'}), 503
     try:
         query = request.args.get('q', '').strip()
         if not query:
             return jsonify({'success': True, 'sessions': []})
-        
+
         col = db[SESSIONS_COLLECTION]
-        # Search by patient name or patient_id (case-insensitive)
+
         search_filter = {
             '$or': [
                 {'metadata.name': {'$regex': query, '$options': 'i'}},
@@ -581,7 +524,7 @@ def search_sessions():
             'notes': 1, 'notes_author': 1,
             'gridfs_refs.report_id': 1
         }).sort('metadata.timestamp', -1).limit(50))
-        
+
         sessions = []
         for d in docs:
             sid = str(d['_id'])
@@ -608,7 +551,7 @@ def search_sessions():
 
 @app.route('/sessions/<session_id>/pdf', methods=['GET'])
 def download_session_pdf(session_id):
-    """Stream the stored PDF report for a session."""
+    """Download a stored PDF or regenerate it from saved data."""
     if db is None:
         return jsonify({'error': 'DB not connected'}), 503
     try:
@@ -620,10 +563,10 @@ def download_session_pdf(session_id):
             return jsonify({'error': 'Session not found'}), 404
         report_id = doc.get('gridfs_refs', {}).get('report_id')
         if not report_id:
-            # No stored PDF — regenerate on the fly with current data including PANSS
+
             meta = doc.get('metadata', {})
             res  = doc.get('results', {})
-            # In download_session_pdf(), replace the pdf_data block:
+
             pdf_data = {
                 'patient': {
                     'id': meta.get('patient_id', session_id),
@@ -631,14 +574,12 @@ def download_session_pdf(session_id):
                     'age_sex': f"{meta.get('age','N/A')} / {meta.get('gender','N/A')}",
                     'date': meta.get('timestamp', datetime.now()).strftime('%d %b %Y') if hasattr(meta.get('timestamp', ''), 'strftime') else str(meta.get('timestamp', ''))
                 },
-                'panss_score': res.get('panss_score') or 'Not recorded',   # ← WAS MISSING
+                'panss_score': res.get('panss_score') or 'Not recorded',
                 'metrics': res.get('features', {}),
-                'prediction': res.get('prediction'),  # FIX PDF-1
-                'doctor_notes': doc.get('notes', ''),                       # ← WAS MISSING
-                # FIX PDF-IMG-1: reuse whatever images were persisted at save
-                # time instead of an empty dict, so this on-the-fly rebuild
-                # (only reached when no report_id was ever stored) still has
-                # the real charts/scatters/heatmap to embed.
+                'prediction': res.get('prediction'),
+                'doctor_notes': doc.get('notes', ''),
+
+
                 'images': res.get('images', {})
             }
             try:
@@ -661,7 +602,7 @@ def download_session_pdf(session_id):
 
 @app.route('/sessions/<session_id>/csv/<csv_type>', methods=['GET'])
 def download_session_csv(session_id, csv_type):
-    """Download fv / spem / sz raw gaze CSV for a session."""
+    """Download a session’s raw gaze CSV by type."""
     if db is None:
         return jsonify({'error': 'DB not connected'}), 503
     try:
@@ -691,7 +632,7 @@ def download_session_csv(session_id, csv_type):
 
 @app.route('/sessions/export_all_features', methods=['GET'])
 def export_all_features():
-    """Export all sessions' 59 features as one big CSV."""
+    """Export saved session metadata and model features as CSV."""
     if db is None:
         return jsonify({'error': 'DB not connected'}), 503
     try:
@@ -726,21 +667,22 @@ def export_all_features():
 
 @app.route('/save_results', methods=['POST'])
 def save_results():
+    """Save assessment results, gaze data, figures, and the report."""
     global db, fs
     print("[DEBUG] /save_results called. Checking DB connection...")
     if db is None or fs is None:
         print("[DEBUG] DB is None! Attempting to reconnect...")
         init_mongodb()
-        
+
     if db is None or fs is None:
         print("[DEBUG] DB is still None after reconnection attempt!")
         return jsonify({'error': 'MongoDB not connected'}), 500
-    
+
     try:
         print("[DEBUG] Attempting to parse JSON payload...")
         data = request.get_json()
         print(f"[DEBUG] JSON parsed successfully. Payload keys: {list(data.keys())}")
-        
+
         subject_id = data.get('subject_id', 'Unknown')
         timestamp = datetime.now()
         gridfs_refs = {}
@@ -750,7 +692,7 @@ def save_results():
             'stored_at': timestamp
         }
 
-        # 1. Upload GridFS assets before creating the clinical session record.
+
         if 'fv_gaze' in data:
             try:
                 print("[DEBUG] Converting fv_gaze to CSV...")
@@ -796,23 +738,7 @@ def save_results():
             except Exception as e:
                 print(f"[WARN] SZ CSV upload failed; session data will still be saved: {e}")
 
-        # 2. Persist the captured chart/scatter images (and the heatmap built
-        # from fv_gaze) on the session document itself, independent of
-        # whether PDF generation below succeeds.
-        #
-        # FIX PDF-IMG-1: previously these images only ever existed inside the
-        # PDF binary generated here — they were never saved anywhere else.
-        # Any later re-render of the PDF (save_notes()'s "regenerate with
-        # updated notes" step, and this route's own "no report_id" fallback
-        # in download_session_pdf()) therefore had no source images to embed
-        # and silently built with 'images': {}, then fs.delete()'d the good
-        # PDF and replaced it with an image-less one. That's why the PDF
-        # downloaded right after a test (via /generate-report, built from
-        # images still live in the DOM) had every chart, but the same
-        # session's PDF downloaded later from the dashboard did not — most
-        # commonly the moment a doctor added clinical notes and saved them.
-        # Storing the images here means every later regeneration path has
-        # the real images to reuse instead of blanking them.
+
         session_images = {
             'spem_hs4': data.get('image_spem_hs4', ''),
             'spem_ls2': data.get('image_spem_ls2', ''),
@@ -827,7 +753,7 @@ def save_results():
             except Exception as heatmap_err:
                 print(f"[WARN] Heatmap generation failed; continuing without it: {heatmap_err}")
 
-        # 3. Generate and Upload PDF Report
+
         try:
             print("[DEBUG] Preparing PDF payload...")
             pdf_payload = {
@@ -839,12 +765,10 @@ def save_results():
                 },
                 'panss_score': data.get('panss_score') or 'Not recorded',
                 'metrics': data.get('features', {}),
-                'prediction': data.get('prediction'),  # FIX PDF-1
+                'prediction': data.get('prediction'),
                 'doctor_notes': data.get('notes', ''),
-                # Pass the already-built image set (heatmap included) rather
-                # than raw fv_gaze — _internal_generate_pdf only recomputes
-                # the heatmap when 'fv_gaze' is present, so this reuses what
-                # we just built above instead of computing it twice.
+
+
                 'images': dict(session_images)
             }
             print("[DEBUG] Generating PDF bytes...")
@@ -860,11 +784,11 @@ def save_results():
         except Exception as pdf_err:
             print(f"Warning: PDF generation/upload failed: {pdf_err}")
 
-        # 3. Create Main Session Document
+
         print("[DEBUG] Creating main session document...")
-        # Generate unique patient_id if not provided
+
         patient_id = data.get('patient_id') or f"PAT-{uuid.uuid4().hex[:8].upper()}"
-        
+
         session_doc = {
             "metadata": {
                 "patient_id": patient_id,
@@ -882,15 +806,14 @@ def save_results():
                             "data_quality": data.get('data_quality'),
                         },
             "results": {
-                "panss_score": data.get('panss_score'),  # store as-is (None/null → None in Mongo)
+                "panss_score": data.get('panss_score'),
                 "features": data.get('features', {}),
-                "prediction": data.get('prediction'),  # FIX PDF-1: persist so the
-                # dashboard's "View Report"/"Download PDF" and the notes-save
-                # PDF-regeneration path (save_notes(), below) can still show
-                # the model result later, not just at the moment of saving.
-                "images": session_images  # FIX PDF-IMG-1: persist so later PDF
-                # re-renders (notes save, no-report_id fallback) have real
-                # images to embed instead of blanking them.
+                "prediction": data.get('prediction'),
+
+
+                "images": session_images
+
+
             },
             "notes": data.get('notes', ""),
             "notes_author": data.get('notes_author', "unknown"),
@@ -935,6 +858,7 @@ def save_results():
 
 @app.route('/sessions/<session_id>/notes', methods=['POST'])
 def save_notes(session_id):
+    """Update a session’s notes and refresh its PDF report."""
     if db is None:
         return jsonify({'success': False, 'error': 'Database not connected'}), 503
     try:
@@ -944,7 +868,7 @@ def save_notes(session_id):
         author = data.get('author', 'unknown')
         col = db[SESSIONS_COLLECTION]
 
-        # Fetch the session to rebuild the PDF
+
         doc = col.find_one({'_id': ObjectId(session_id)})
         if not doc:
             return jsonify({'success': False, 'error': 'Session not found'}), 404
@@ -953,13 +877,13 @@ def save_notes(session_id):
         res  = doc.get('results', {})
         ts   = meta.get('timestamp', datetime.now())
 
-        # Update notes first
+
         col.update_one(
             {'_id': ObjectId(session_id)},
             {'$set': {'notes': notes, 'notes_author': author, 'notes_updated_at': datetime.now()}}
         )
 
-        # Regenerate PDF with updated notes
+
         try:
             pdf_payload = {
                 'patient': {
@@ -970,19 +894,15 @@ def save_notes(session_id):
                 },
                 'panss_score': res.get('panss_score') or 'Not recorded',
                 'metrics': res.get('features', {}),
-                'prediction': res.get('prediction'),  # FIX PDF-1
-                'doctor_notes': notes,   # ← the NEW notes
-                # FIX PDF-IMG-1: reuse the images captured at save time
-                # instead of an empty dict. This used to wipe every SPEM
-                # graph, fixation scatter, and heatmap from the stored PDF
-                # the instant a doctor saved notes, because those images
-                # were never persisted anywhere except inside the old PDF
-                # binary this code was about to delete.
+                'prediction': res.get('prediction'),
+                'doctor_notes': notes,
+
+
                 'images': res.get('images', {})
             }
             pdf_bytes = _internal_generate_pdf(pdf_payload)
 
-            # Delete old PDF from GridFS if it exists
+
             old_report_id = doc.get('gridfs_refs', {}).get('report_id')
             if old_report_id:
                 try:
@@ -990,7 +910,7 @@ def save_notes(session_id):
                 except Exception:
                     pass
 
-            # Store new PDF
+
             subject_id = meta.get('subject_id', session_id)
             new_report_id = fs.put(
                 pdf_bytes,
@@ -1004,7 +924,7 @@ def save_notes(session_id):
             )
         except Exception as pdf_err:
             print(f"Warning: PDF regeneration failed after notes save: {pdf_err}")
-            # Notes are already saved; PDF regeneration failure is non-fatal
+
 
         return jsonify({'success': True})
     except Exception as e:
@@ -1012,7 +932,7 @@ def save_notes(session_id):
 
 @app.route('/analytics', methods=['GET'])
 def get_analytics():
-    """Return aggregated analytics data for charts."""
+    """Aggregate saved sessions for dashboard analytics."""
     if db is None:
         return jsonify({'success': False, 'error': 'Database not connected'}), 503
     try:
@@ -1023,7 +943,7 @@ def get_analytics():
             'results.features': 1
         }).sort('metadata.timestamp', -1).limit(500))
 
-        # Build timeline: sessions per day (last 30 days)
+
         from collections import defaultdict
         daily_counts = defaultdict(int)
         panss_scores = []
@@ -1054,16 +974,16 @@ def get_analytics():
                     pass
             feats = res.get('features', {})
             for k, v in feats.items():
-                if v is not None and v != '' and v == v:  # not NaN
+                if v is not None and v != '' and v == v:
                     try:
                         feature_avgs[k].append(float(v))
                     except (ValueError, TypeError):
                         pass
 
-        # Sort daily counts
+
         sorted_days = sorted(daily_counts.items())[-30:]
 
-        # Feature averages (for key features)
+
         KEY_FEATURES = [
             'fv_fnum_mean', 'fv_fdur_mean', 'fv_samp_mean',
             'HS4_Mean_H_gain', 'HS4_SacNum',
@@ -1095,13 +1015,14 @@ def get_analytics():
 
 @app.route('/generate-report', methods=['POST'])
 def generate_report():
+    """Generate and return a PDF from a report payload."""
     try:
         data = request.get_json()
         pdf = _internal_generate_pdf(data)
-        
+
         safe_id = str(data.get('patient', {}).get('id', 'report')).replace('/', '_').replace('\\', '_')
         filename = f"Report_{safe_id}.pdf"
-        
+
         return send_file(
             io.BytesIO(pdf),
             mimetype='application/pdf',
