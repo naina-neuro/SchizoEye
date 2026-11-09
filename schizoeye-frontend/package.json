@@ -1,0 +1,29 @@
+{
+  "name": "schizoeye-frontend",
+  "private": true,
+  "version": "0.1.0-stage1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "postbuild": "node scripts/verify-integrity.mjs --dist",
+    "preview": "vite preview",
+    "check": "node scripts/verify-integrity.mjs && node scripts/test-redirect.mjs && node scripts/check-battery-refs.mjs && node scripts/check-feature-parity.mjs && node scripts/generate-feature-order.mjs --check && npm test",
+    "test": "tsx --test tests/api.test.ts tests/lib.test.ts",
+    "gen:features": "node scripts/generate-feature-order.mjs",
+    "test:e2e": "node tests/e2e/run-e2e.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "chart.js": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.11",
+    "tsx": "^4.19.0"
+  }
+}

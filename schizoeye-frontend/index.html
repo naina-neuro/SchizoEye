@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Oculomotor Diagnostic Battery</title>
+    <!--
+      Legacy-URL redirect. Runs before React loads. Same condition the original index.html used to
+      decide "assessment mode": ?mode=test, a non-empty ?token=, or being embedded in an iframe.
+      The full query string and hash are preserved (token, etc.), and window.opener is unaffected.
+    -->
+    <!-- Original app stylesheet (CSS variables, report-modal styles). Served untouched from public/. -->
+    <link rel="stylesheet" href="/styles.css" />
+    <script id="legacy-redirect">
+      (function () {
+        try {
+          var p = new URLSearchParams(window.location.search);
+          var embedded;
+          try { embedded = window.parent !== window; } catch (e) { embedded = true; }
+          if (p.get('mode') === 'test' || p.get('token') || embedded) {
+            window.__SCHIZOEYE_REDIRECTING__ = true;
+            window.location.replace('/battery.html' + window.location.search + window.location.hash);
+          }
+        } catch (e) { console.error('[legacy-redirect]', e); }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

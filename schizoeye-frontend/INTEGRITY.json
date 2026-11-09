@@ -1,0 +1,8 @@
+{
+  "battery.html": "35c8f855cef8c5151c083970fbd9be6c51813fdab1e1da56256d005d6610533a",
+  "config.js": "0471acecb8d1680d5bb12f8d9fbc2d1cf865bd097c38235cd9b683aafb8b0a49",
+  "eye-tracker.js": "7740a455b044472fe7e987dcb2306c0a2738da37010db8950ee046b7b8d01b5a",
+  "gaze-collector.js": "a584e8129323da645a17bd3b963c78c7e2f0daa5639dd4af18e19b50d901ff4c",
+  "battery-controller.js": "258c59fee71c6f236edf1c2610436291b63cd9da861801bfd9b730f8602bb498",
+  "styles.css": "61f460ac2a45535941d5962f0c8cd19f37ea05f1488d2deb49371927c1ae3986"
+}

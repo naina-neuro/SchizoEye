@@ -1,0 +1,5 @@
+# Stage 1: build config only. Do NOT point the production site (naina-schizo.netlify.app) at this
+# build until the React login/dashboards (later stages) are implemented — Stage 1 has no login page.
+[build]
+  command = "npm run build"
+  publish = "dist"
