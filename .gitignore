@@ -3,3 +3,13 @@ backup_original\SHA256SUMS.txt
 schizoeye-frontend\node_modules
 dist
 *.local
+
+*.py[cod]
+*$py.class
+
+# Python cache
+**/__pycache__/
+*.py[cod]
+# Compiled Python files
+*.pyc
+*.pyo
