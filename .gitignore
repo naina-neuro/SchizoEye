@@ -13,3 +13,8 @@ dist
 # Compiled Python files
 *.pyc
 *.pyo
+# Environment variables
+.env
+
+**/.env
+
