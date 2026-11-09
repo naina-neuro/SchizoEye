@@ -1,0 +1,5 @@
+backend\.env
+backup_original\SHA256SUMS.txt
+schizoeye-frontend\node_modules
+dist
+*.local
