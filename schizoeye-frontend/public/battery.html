@@ -17,9 +17,12 @@
   Local files:
   - config.js              API base URL
   - styles.css             Shared layout and styling
-  - eye-tracker.js         Face landmarks, calibration, and gaze estimation
-  - gaze-collector.js      Free-viewing gaze sample collection
-  - battery-controller.js  Assessment flow, feature extraction, and API calls
+  - main.js                Bootstrap, diagnostics, module wiring, and compatibility globals
+  - eye-tracker.js         Camera lifecycle, face landmarks, calibration, and gaze estimation
+  - assessment-tasks.js    Assessment gaze collection
+  - battery-controller.js  Assessment flow, feature extraction, and report coordination
+  - api-service.js         Classification, session saving, and report requests
+  - report-manager.js      PDF generation and report downloads
 
   Required local assets include stimuli/1.jpg–25.jpg and the task instruction media.
 -->
@@ -138,94 +141,6 @@
       <button type="button" onclick="document.getElementById('client-debug-panel').style.display='none'">Hide</button>
     </div>
   </div>
-
-  <script>
-    // battery.html bootstrap — extracted from index.html (Stage 1 of the React migration).
-    // Login and the doctor/admin/clinician dashboards now live in the React app (index.html).
-    // The diagnostics block and returnToDashboard() are copied verbatim from the original inline script;
-    // everything marked "MIGRATION" is new glue.
-
-        const _clientDiagnostics = [];
-    // Record frontend errors in the on-page diagnostics panel and browser console.
-    window.reportClientError = function (stage, error, details) {
-      const message = error instanceof Error ? error.message : String(error || 'Unknown error');
-      const stack = error instanceof Error && error.stack ? `\n${error.stack}` : '';
-      const line = `[${new Date().toISOString()}] ${stage}: ${message}${details ? `\n${details}` : ''}${stack}`;
-      _clientDiagnostics.push(line);
-      const panel = document.getElementById('client-debug-panel');
-      const log = document.getElementById('client-debug-log');
-      if (log) log.textContent = _clientDiagnostics.join('\n\n');
-      if (panel) panel.style.display = 'block';
-      console.error(line);
-    };
-    // Copy the collected frontend diagnostics for troubleshooting.
-    window.copyClientDiagnostics = async function () {
-      const text = _clientDiagnostics.join('\n\n') || 'No client errors recorded.';
-      try { await navigator.clipboard.writeText(text); } catch (e) { window.prompt('Copy diagnostics:', text); }
-    };
-    // Emit timestamped diagnostic messages during an assessment.
-    window.TestDiag = function (msg, extra) {
-      const ts = new Date().toISOString().split('T')[1].replace('Z', '');
-      if (extra !== undefined) console.log(`[TestDiag ${ts}] ${msg}`, extra);
-      else console.log(`[TestDiag ${ts}] ${msg}`);
-    };
-    window.addEventListener('error', event => {
-      window.reportClientError('window error', event.error || event.message, `${event.filename || ''}:${event.lineno || ''}`);
-    });
-    window.addEventListener('unhandledrejection', event => {
-      const reason = event.reason;
-      const msg = reason && reason.message ? reason.message : String(reason);
-      if (typeof window.TestDiag === 'function') window.TestDiag('unhandled promise rejection: ' + msg, reason);
-      window.reportClientError('unhandled promise', event.reason);
-    });
-
-    // MIGRATION: original gate was externalTestMode -> battery, otherwise login/dashboard.
-    // The same condition is kept; anything else is sent to the React app at "/".
-    function initializeBattery() {
-      const urlParams = new URLSearchParams(window.location.search);
-      const testToken = urlParams.get('token');
-      const externalTestMode = urlParams.get('mode') === 'test' || Boolean(testToken) || window.parent !== window;
-      if (!externalTestMode) { window.location.replace('/'); return; }
-      document.body.classList.add('headless-mode');
-      showBatteryIntro();
-    }
-    window.addEventListener('DOMContentLoaded', initializeBattery);
-
-    // MIGRATION: dashboards are no longer in this page; showRoleDashboard now means "go to the React app".
-    function showRoleDashboard() { window.location.href = '/'; }
-
-    // Display the assessment start screen (dashboard hiding removed — those elements no longer exist here).
-    function showBatteryIntro() {
-      document.getElementById('battery-intro').classList.remove('protocol-started');
-      document.getElementById('battery-intro').style.display = 'block';
-    }
-
-    // Leave the results screen and return to the dashboard or assessment intro.
-    function returnToDashboard() {
-      document.getElementById('results-screen').style.display = 'none';
-      document.getElementById('return-to-dashboard-wrap').style.display = 'none';
-
-      const saveBtn = document.getElementById('btn-save-session');
-      if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.textContent = '💾 Save Session to Database';
-        saveBtn.style.opacity = '1';
-      }
-
-      const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.get('mode') === 'test') {
-        if (confirm('Return to the dashboard tab? This tab will close.')) {
-          window.close();
-        } else {
-          showBatteryIntro();
-        }
-      } else {
-        showRoleDashboard();
-      }
-    }
-  </script>
-
-
 
   <!-- STEP 1: Check camera access, face framing, and lighting before calibration. -->
 
@@ -1012,7 +927,7 @@
      TASK 3 — FREE VIEWING EXPERIMENT SCREEN
      Full-screen black canvas. Shows 25 stimulus images one at a time.
      Each image preceded by a 1s fixation crosshair.
-     Gaze recorded by RawGazeCollector (gaze-collector.js) during 8s exposure.
+     Gaze recorded by RawGazeCollector (assessment-tasks.js) during 8s exposure.
 ──────────────────────────────────────────────────────────────────────────── -->
   <div id="fv-experiment-screen">
     <!-- Live sample counter shown top-left during recording -->
@@ -1353,28 +1268,11 @@
           </div>
         </div>
       </div>
-      <!-- inject logged-in user into notes label -->
-      <script>
-        // Populate the notes-author label once login information is available.
-        (function checkNotesUser() {
-          const label = document.getElementById('notes-author-label');
-          if (label && window._currentUser) label.textContent = `— author: ${window._currentUser}`;
-          else setTimeout(checkNotesUser, 500);
-        })();
-      </script>
-
     </div>
   </div>
 
-  <!-- ─────────────────────────────────────────────────────────────────────────
-     SCRIPTS — loaded in strict dependency order (no module bundler needed)
-     1. eye-tracker.js        NeurOcular engine (TF/MediaPipe, loaded via CDN in head)
-     2. gaze-collector.js     requires EyeTracker global from eye-tracker.js
-     3. battery-controller.js requires EyeTracker + RawGazeCollector + Plotly
-──────────────────────────────────────────────────────────────────────────── -->
-  <script src="eye-tracker.js"></script>
-  <script src="gaze-collector.js"></script>
-  <script src="battery-controller.js"></script>
+  <!-- main.js imports the assessment modules and restores legacy window globals. -->
+  <script type="module" src="main.js"></script>
 
 </body>
 

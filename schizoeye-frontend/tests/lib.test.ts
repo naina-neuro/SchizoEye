@@ -12,8 +12,8 @@ import type { Session } from '../src/types/session.ts';
 const here = new URL('.', import.meta.url).pathname;
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
-test('59-feature contract: generated FEATURE_ORDER == battery-controller.js == app.py REQUIRED_FEATURES (names and order)', () => {
-  const js = [...read('../public/battery-controller.js').match(/const FEATURE_ORDER = \[([\s\S]*?)\];/)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+test('59-feature contract: generated FEATURE_ORDER == feature-extractor.js == app.py REQUIRED_FEATURES (names and order)', () => {
+  const js = [...read('../public/feature-extractor.js').match(/const FEATURE_ORDER = \[([\s\S]*?)\];/)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   const py = [...read('../../backup_original/app.py').match(/REQUIRED_FEATURES = \[([\s\S]*?)\]/)![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
   assert.equal(FEATURE_ORDER.length, 59);
   assert.equal(new Set(FEATURE_ORDER).size, 59);

@@ -1,8 +1,9 @@
 # schizoeye-frontend — migration Stage 2 (React login + dashboards)
 
 React + TypeScript + Vite for **login and the doctor / admin / clinician dashboards**.
-The assessment itself is the static page `public/battery.html` (unchanged camera, calibration, tasks, 59-feature
-extraction). Dashboards open it in a new tab (`/battery.html?mode=test`), exactly as before.
+The assessment itself is the static page `public/battery.html`. Its ES-module entry point wires camera tracking,
+assessment tasks, the 59-feature extractor, API requests, and report handling while preserving the original page globals.
+Dashboards open it in a new tab (`/battery.html?mode=test`), exactly as before.
 
 ## Stimulus images (you copy these; filenames unchanged)
     public/stimuli/1.jpg … public/stimuli/25.jpg
@@ -19,7 +20,7 @@ Dev logins are whatever ADMIN_PASSWORD / DOCTOR_PASSWORD / CLINICIAN_PASSWORD ar
     npm run build          # tsc --noEmit, vite build, then proves dist/ static files == public/ byte for byte
 
 ## Tests
-    npm test               # 18 unit tests: API contracts (mocked fetch), binning, report formatting, auth storage, 59-feature parity
+    npm test               # API contracts (mocked fetch), dashboard helpers, auth storage, and 59-feature parity
     npm run test:e2e       # optional: real Chromium vs a MOCK Flask API (needs: npm i -D playwright; npx playwright install chromium)
                            # SHOTS=/some/dir npm run test:e2e   also saves screenshots
 `test:e2e` does NOT test Flask, MongoDB, the camera, MediaPipe, calibration or PDF generation.
@@ -27,7 +28,7 @@ Dev logins are whatever ADMIN_PASSWORD / DOCTOR_PASSWORD / CLINICIAN_PASSWORD ar
 ## Where things are
     src/api/*          fetch wrappers (one per Flask endpoint group) — credentials: 'include' on every call
     src/lib/*          pure logic (analytics bins, report groups, admin stats, search) — unit-tested without React
-    src/types/featureOrder.ts   GENERATED from public/battery-controller.js (npm run gen:features); never hand-edit
+    src/types/featureOrder.ts   GENERATED from public/feature-extractor.js (npm run gen:features); never hand-edit
     src/pages, src/components   UI
     src/styles/legacy.css       login + dashboard CSS copied from the original index.html (+ classes replacing inline styles)
     public/styles.css           original stylesheet, linked from index.html untouched (CSS variables, report-modal styles)

@@ -8,7 +8,18 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const FILES = ['battery.html', 'config.js', 'eye-tracker.js', 'gaze-collector.js', 'battery-controller.js', 'styles.css'];
+const FILES = [
+  'battery.html',
+  'config.js',
+  'main.js',
+  'eye-tracker.js',
+  'assessment-tasks.js',
+  'feature-extractor.js',
+  'battery-controller.js',
+  'api-service.js',
+  'report-manager.js',
+  'styles.css',
+];
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 const manifestPath = path.join(root, 'INTEGRITY.json');
 const mode = process.argv[2];

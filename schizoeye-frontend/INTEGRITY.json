@@ -1,8 +1,11 @@
 {
-  "battery.html": "35c8f855cef8c5151c083970fbd9be6c51813fdab1e1da56256d005d6610533a",
+  "battery.html": "d832fbbf3c0e89888f4858d44ed123d55b152ac3ad750bc39e3132ea6906b42b",
   "config.js": "0471acecb8d1680d5bb12f8d9fbc2d1cf865bd097c38235cd9b683aafb8b0a49",
-  "eye-tracker.js": "7740a455b044472fe7e987dcb2306c0a2738da37010db8950ee046b7b8d01b5a",
-  "gaze-collector.js": "a584e8129323da645a17bd3b963c78c7e2f0daa5639dd4af18e19b50d901ff4c",
-  "battery-controller.js": "258c59fee71c6f236edf1c2610436291b63cd9da861801bfd9b730f8602bb498",
+  "main.js": "288edd09da643b0b45cffa9fe60ce42d93bad079dbd2871fd9c5d56c1094bf67",
+  "eye-tracker.js": "a48ba5d2e0bd80e2de344e8414855ae6188cfd44c474d76023529b19fa1a34e2",
+  "assessment-tasks.js": "e730189de22065173935bb12a962e7cdf728720e1d27dcaaa965820f59948d4b",
+  "battery-controller.js": "42893f04041085c9ca7863c9e2170cc378c317c6a31e686d95f34740add28c95",
+  "api-service.js": "292eb7a09f3062f5c5efc5a52715ed48d4afa4a7399996cad2d32e9d153b1645",
+  "report-manager.js": "8fa6c989ccf2f535edafdca9f7b7c57987d3308b423aed151b5fc569f23326a0",
   "styles.css": "61f460ac2a45535941d5962f0c8cd19f37ea05f1488d2deb49371927c1ae3986"
 }

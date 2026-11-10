@@ -9,7 +9,7 @@
     "postbuild": "node scripts/verify-integrity.mjs --dist",
     "preview": "vite preview",
     "check": "node scripts/verify-integrity.mjs && node scripts/test-redirect.mjs && node scripts/check-battery-refs.mjs && node scripts/check-feature-parity.mjs && node scripts/generate-feature-order.mjs --check && npm test",
-    "test": "tsx --test tests/api.test.ts tests/lib.test.ts",
+    "test": "tsx --test tests/api.test.ts tests/lib.test.ts tests/battery-api.test.ts tests/feature-extractor.test.ts",
     "gen:features": "node scripts/generate-feature-order.mjs",
     "test:e2e": "node tests/e2e/run-e2e.mjs"
   },

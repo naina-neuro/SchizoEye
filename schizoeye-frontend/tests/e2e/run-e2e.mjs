@@ -23,7 +23,7 @@ await esbuild.build({
 console.log(`bundled src/main.tsx (chart.js: ${haveChart ? 'real package' : 'STUB — real package not installed here'})`);
 
 // ---- mock Flask API ---------------------------------------------------------------------------
-const FEATURES = [...readFileSync(path.join(root, 'public/battery-controller.js'), 'utf8').match(/const FEATURE_ORDER = \[([\s\S]*?)\];/)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+const FEATURES = [...readFileSync(path.join(root, 'public/feature-extractor.js'), 'utf8').match(/const FEATURE_ORDER = \[([\s\S]*?)\];/)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const now = new Date();
 const todayStr = `${String(now.getUTCDate()).padStart(2, '0')} ${MONTHS[now.getUTCMonth()]} ${now.getUTCFullYear()}`;

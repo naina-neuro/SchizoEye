@@ -6,7 +6,7 @@
  */
 
 
-const EyeTracker = (() => {
+export const EyeTracker = (() => {
 
   // ── Shared helpers ──────────────────────────────────────────
   /** Find a page element by its ID. */
@@ -1224,6 +1224,9 @@ const EyeTracker = (() => {
 
   return api;
 })();
+
+// Keep the documented legacy global for inline HTML and partner integrations.
+window.EyeTracker = EyeTracker;
 
 /** Start the tracker through the legacy battery-controller hook. */
 window._startEyeTrackerNow = function () {
